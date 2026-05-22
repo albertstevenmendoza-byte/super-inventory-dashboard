@@ -236,7 +236,7 @@ function processFile(file, type) {
     try {
       progFill.style.width  = '50%';
       progTitle.textContent = 'Parsing columns…';
-      const wb   = XLSX.read(e.target.result, { type: 'array', cellDates: true });
+      const wb   = XLSX.read(e.target.result, { type: 'array' }); // cellDates omitted — time-only cells cause parse errors
       const ws   = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws, { raw: false, dateNF: 'yyyy-mm-dd' });
 
@@ -261,14 +261,46 @@ function processFile(file, type) {
   reader.readAsArrayBuffer(file);
 }
 
+/* ── Robust date parser ───────────────────────────────────
+   SheetJS (raw:false, dateNF:'yyyy-mm-dd') returns date cells
+   as 'yyyy-mm-dd' strings. But SAP exports sometimes include
+   full datetime strings, US-format dates, or empty cells.
+   Time-only cells (Activation Time, Count Time, etc.) come
+   through as 'HH:MM:SS' — we discard those safely.
+──────────────────────────────────────────────────────────── */
+function parseExcelDate(val) {
+  if (!val) return '';
+  const s = String(val).trim();
+  // Already YYYY-MM-DD (most common with dateNF option)
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  // MM/DD/YYYY
+  const mdy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (mdy) return `${mdy[3]}-${mdy[1].padStart(2,'0')}-${mdy[2].padStart(2,'0')}`;
+  // Looks like a time string (HH:MM:SS) — not a date, discard
+  if (/^\d{1,2}:\d{2}/.test(s)) return '';
+  // Last resort — try native Date parse
+  try {
+    const d = new Date(s);
+    if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  } catch(e) {}
+  return '';
+}
+
+// Safely get fiscal period from a parsed date string
+function getFP(dateStr) {
+  if (!dateStr) return null;
+  try {
+    return NovusCore.getFiscalPeriod(new Date(dateStr + 'T12:00:00'));
+  } catch(e) { return null; }
+}
+
 /* ── Map adjustment rows from SAP MB51 format ────────────── */
 function mapAdjustmentRows(rows) {
   return rows.map(r => {
     const movText  = (r['Movement Type Text'] || '').toLowerCase();
     const category = detectCategory(movText);
-    const dateRaw  = r['Posting Date'] || '';
-    const dateStr  = dateRaw.slice(0, 10); // YYYY-MM-DD
-    const fp       = NovusCore.getFiscalPeriod(new Date(dateStr + 'T12:00:00'));
+    const dateStr  = parseExcelDate(r['Posting Date']);
+    const fp       = getFP(dateStr);
     return {
       posted_date:          dateStr,
       fiscal_period:        fp?.label || 'UNKNOWN',
@@ -293,9 +325,8 @@ function mapCycleCountRows(rows) {
   return rows.map(r => {
     const bin      = String(r['Storage Bin'] || '').trim();
     const zone     = bin.length >= 2 ? bin.slice(0, 2).toUpperCase() : bin.toUpperCase();
-    const dateRaw  = r['Count Date'] || '';
-    const dateStr  = dateRaw.slice(0, 10);
-    const fp       = NovusCore.getFiscalPeriod(new Date(dateStr + 'T12:00:00'));
+    const dateStr  = parseExcelDate(r['Count Date']);
+    const fp       = getFP(dateStr);
     const sapQty   = parseFloat(r['Book Quantity'])    || 0;
     const floorQty = parseFloat(r['Counted Quantity']) || 0;
     const variance = parseFloat(r['Difference Quantity']) || 0;
@@ -305,7 +336,7 @@ function mapCycleCountRows(rows) {
 
     return {
       count_date:           dateStr,
-      logged_at:            dateStr ? new Date(dateStr + 'T12:00:00').toISOString() : null,
+      logged_at:            dateStr ? new Date(dateStr + 'T12:00:00').toISOString() : new Date().toISOString(),
       fiscal_period:        fp?.label || 'UNKNOWN',
       zone,
       storage_bin:          bin,
