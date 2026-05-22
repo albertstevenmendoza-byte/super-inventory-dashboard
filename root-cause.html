@@ -101,7 +101,6 @@
   <button class="btn btn-ghost btn-sm" onclick="exportCSV()" style="margin-bottom:24px;">⬇️ Export All Tickets to CSV</button>
 </main>
 
-<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="novus-core.js"></script>
@@ -124,9 +123,9 @@ let sb, allTickets = [];
 let statusChart, rcChart;
 
 (async () => {
-  const account = await NovusCore.requireAuth();
-  if (!account) return;
-  NovusCore.renderNav('root-cause', account);
+  
+  
+  NovusCore.renderNav('root-cause');
   sb = NovusCore.getSupabase();
 
   // Populate root cause dropdown
