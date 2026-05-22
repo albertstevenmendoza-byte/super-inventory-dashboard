@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Adjustment Tracker — Inv. Control Hub</title>
+  <link rel="stylesheet" href="novus-styles.css" />
+  <style>
+    .cat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .cat-card {
+      background: var(--bg-600);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+    }
+    .cat-card .cat-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-2); margin-bottom: 6px; }
+    .cat-card .cat-qty   { font-size: 22px; font-weight: 700; }
+    .cat-card .cat-count { font-size: 11px; color: var(--text-2); margin-top: 3px; }
+    .cat-qty.neg { color: var(--red);   }
+    .cat-qty.pos { color: var(--green); }
+    .cat-qty.zer { color: var(--text-2);}
+  </style>
+</head>
+<body>
+
+<nav id="sidebar"></nav>
+
+<main id="main">
+  <div class="page-header">
+    <h1>📝 Adjustment Tracker</h1>
+    <p id="periodInfo">Loading fiscal period…</p>
+  </div>
+
+  <!-- Period KPI row -->
+  <div class="kpi-grid" style="margin-bottom:20px;">
+    <div class="kpi-card blue">
+      <div class="kpi-label">Period Adjustments</div>
+      <div class="kpi-value" id="kpiTotal">—</div>
+      <div class="kpi-sub">total entries this period</div>
+    </div>
+    <div class="kpi-card amber">
+      <div class="kpi-label">Net Qty Adjusted</div>
+      <div class="kpi-value" id="kpiNet">—</div>
+      <div class="kpi-sub">units (signed total)</div>
+    </div>
+    <div class="kpi-card red">
+      <div class="kpi-label">Largest Removal</div>
+      <div class="kpi-value" id="kpiLargest">—</div>
+      <div class="kpi-sub" id="kpiLargestCat">—</div>
+    </div>
+    <div class="kpi-card green">
+      <div class="kpi-label">Period</div>
+      <div class="kpi-value" id="kpiPeriodLabel" style="font-size:16px;">—</div>
+      <div class="kpi-sub" id="kpiPeriodDates">—</div>
+    </div>
+  </div>
+
+  <!-- Category breakdown -->
+  <div class="card">
+    <div class="card-title">📊 Current Period — By Category</div>
+    <div class="cat-grid" id="catGrid">
+      <div style="color:var(--text-2);font-size:13px;">Loading…</div>
+    </div>
+  </div>
+
+  <!-- Entry form -->
+  <div class="card">
+    <div class="card-title">➕ Log an Adjustment</div>
+
+    <div class="form-grid">
+      <div class="form-group">
+        <label>Date *</label>
+        <input id="fDate" type="date" />
+      </div>
+      <div class="form-group">
+        <label>Material Number *</label>
+        <input id="fMaterial" type="text" placeholder="e.g. MAT-10045" />
+      </div>
+      <div class="form-group">
+        <label>Batch / Lot</label>
+        <input id="fBatch" type="text" placeholder="e.g. 250610-A" />
+      </div>
+      <div class="form-group">
+        <label>Adjustment Qty * <span style="font-size:10px;color:var(--text-2);">(+ added · − removed)</span></label>
+        <input id="fQty" type="number" step="0.01" placeholder="e.g. -48 or +12" />
+      </div>
+      <div class="form-group">
+        <label>Category *</label>
+        <select id="fCategory"></select>
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-bottom:14px;">
+      <label>Notes</label>
+      <input id="fNotes" type="text" placeholder="e.g. Damaged cases from receiving dock — disposition approved by QA" />
+    </div>
+
+    <button class="btn btn-primary" onclick="submitAdj()">💾 Save Adjustment</button>
+  </div>
+
+  <!-- Log table -->
+  <div class="card">
+    <div class="card-title flex items-center justify-between">
+      <span>📋 Adjustment Log</span>
+      <div class="flex gap-8 items-center">
+        <select id="filterPeriod" onchange="loadAdjustments()" style="background:var(--bg-600);border:1px solid var(--border);border-radius:6px;color:var(--text-1);font-size:12px;padding:5px 8px;font-family:var(--font);">
+          <option value="current">Current Period</option>
+        </select>
+        <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇️ Export CSV</button>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>Date</th><th>Period</th><th>Material</th><th>Batch</th>
+            <th>Adj. Qty</th><th>Category</th><th>Notes</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="adjBody">
+          <tr><td colspan="9" style="padding:20px;text-align:center;color:var(--text-2);">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="novus-core.js"></script>
+<script>
+let sb, currentPeriod, allAdj = [];
+
+(async () => {
+  const account = await NovusCore.requireAuth();
+  if (!account) return;
+  NovusCore.renderNav('adjustment-tracker', account);
+  sb = NovusCore.getSupabase();
+
+  currentPeriod = NovusCore.getFiscalPeriod();
+  document.getElementById('periodInfo').textContent   = currentPeriod?.display || 'Outside known fiscal calendar';
+  document.getElementById('kpiPeriodLabel').textContent = currentPeriod?.label  || '—';
+  document.getElementById('kpiPeriodDates').textContent = currentPeriod
+    ? `${currentPeriod.start} → ${currentPeriod.end}` : '—';
+
+  // Default date input to today
+  document.getElementById('fDate').value = NovusCore.todayStr();
+
+  // Build category dropdown
+  const sel = document.getElementById('fCategory');
+  NovusCore.ADJ_CATEGORIES.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = opt.textContent = c;
+    sel.appendChild(opt);
+  });
+
+  // Build period filter dropdown from fiscal calendar
+  const fp = document.getElementById('filterPeriod');
+  NovusCore.FISCAL_CALENDAR.slice().reverse().forEach(p => {
+    const label = `FY${p.fy}-P${String(p.period).padStart(2,'0')}`;
+    const opt   = document.createElement('option');
+    opt.value   = label;
+    opt.textContent = `${label}  (${p.start} → ${p.end})`;
+    if (currentPeriod && label === currentPeriod.label) opt.selected = true;
+    fp.appendChild(opt);
+  });
+
+  await loadAdjustments();
+})();
+
+async function loadAdjustments() {
+  const selected = document.getElementById('filterPeriod').value;
+  const period   = selected === 'current' ? currentPeriod?.label : selected;
+
+  let query = sb.from('adjustments').select('*').order('posted_date', { ascending: false });
+  if (period) query = query.eq('fiscal_period', period);
+
+  const { data } = await query;
+  allAdj = data || [];
+
+  renderKPIs(allAdj, period);
+  renderCatBreakdown(allAdj);
+  renderTable(allAdj);
+}
+
+function renderKPIs(rows, periodLabel) {
+  document.getElementById('kpiTotal').textContent = rows.length;
+  if (!rows.length) {
+    document.getElementById('kpiNet').textContent     = '0';
+    document.getElementById('kpiLargest').textContent = '—';
+    document.getElementById('kpiLargestCat').textContent = '—';
+    return;
+  }
+  const net = rows.reduce((s, r) => s + parseFloat(r.adjustment_qty), 0);
+  document.getElementById('kpiNet').textContent = (net >= 0 ? '+' : '') + net.toFixed(0);
+
+  // Category with largest absolute total
+  const catTotals = {};
+  rows.forEach(r => { catTotals[r.category] = (catTotals[r.category]||0) + parseFloat(r.adjustment_qty); });
+  const [topCat, topVal] = Object.entries(catTotals).sort((a,b) => Math.abs(b[1])-Math.abs(a[1]))[0] || ['—',0];
+  document.getElementById('kpiLargest').textContent   = (topVal>=0?'+':'') + topVal.toFixed(0);
+  document.getElementById('kpiLargestCat').textContent = topCat;
+}
+
+function renderCatBreakdown(rows) {
+  const grid = document.getElementById('catGrid');
+  const totals = {};
+  const counts = {};
+  NovusCore.ADJ_CATEGORIES.forEach(c => { totals[c] = 0; counts[c] = 0; });
+  rows.forEach(r => {
+    totals[r.category] = (totals[r.category]||0) + parseFloat(r.adjustment_qty);
+    counts[r.category] = (counts[r.category]||0) + 1;
+  });
+  grid.innerHTML = NovusCore.ADJ_CATEGORIES.map(cat => {
+    const qty   = totals[cat] || 0;
+    const cnt   = counts[cat] || 0;
+    const cls   = qty < 0 ? 'neg' : qty > 0 ? 'pos' : 'zer';
+    const sign  = qty > 0 ? '+' : '';
+    return `<div class="cat-card">
+      <div class="cat-label">${cat}</div>
+      <div class="cat-qty ${cls}">${sign}${qty.toFixed(0)}</div>
+      <div class="cat-count">${cnt} entr${cnt===1?'y':'ies'}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderTable(rows) {
+  const tbody = document.getElementById('adjBody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--text-2);">No adjustments logged for this period.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(r => {
+    const qty  = parseFloat(r.adjustment_qty);
+    const cls  = qty < 0 ? 'text-red' : qty > 0 ? 'text-green' : '';
+    const sign = qty > 0 ? '+' : '';
+    return `<tr>
+      <td style="color:var(--text-2)">${r.id}</td>
+      <td>${r.posted_date}</td>
+      <td style="color:var(--text-2);font-size:12px;">${r.fiscal_period}</td>
+      <td class="fw-600">${r.material_number}</td>
+      <td>${r.batch_lot||'—'}</td>
+      <td class="fw-600 ${cls}">${sign}${qty.toFixed(2)}</td>
+      <td><span class="badge badge-blue">${r.category}</span></td>
+      <td style="color:var(--text-2);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.notes||'—'}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="deleteAdj(${r.id})">🗑</button></td>
+    </tr>`;
+  }).join('');
+}
+
+async function submitAdj() {
+  const date     = document.getElementById('fDate').value;
+  const material = document.getElementById('fMaterial').value.trim().toUpperCase();
+  const batch    = document.getElementById('fBatch').value.trim().toUpperCase();
+  const qty      = parseFloat(document.getElementById('fQty').value);
+  const category = document.getElementById('fCategory').value;
+  const notes    = document.getElementById('fNotes').value.trim();
+
+  if (!date)     { NovusCore.toast('Date is required.', 'error'); return; }
+  if (!material) { NovusCore.toast('Material Number is required.', 'error'); return; }
+  if (isNaN(qty) || qty === 0) { NovusCore.toast('Adjustment Qty cannot be zero.', 'error'); return; }
+
+  // Determine fiscal period from the posted date
+  const [y,m,d]   = date.split('-').map(Number);
+  const postPeriod = NovusCore.getFiscalPeriod(new Date(y, m-1, d));
+
+  const { error } = await sb.from('adjustments').insert({
+    posted_date: date, fiscal_period: postPeriod?.label || 'UNKNOWN',
+    material_number: material, batch_lot: batch,
+    adjustment_qty: qty, category, notes,
+  });
+
+  if (error) { NovusCore.toast('Save failed: ' + error.message, 'error'); return; }
+
+  NovusCore.toast(`✅ Saved — ${material} · ${qty>=0?'+':''}${qty.toFixed(2)} · ${category}`, 'success');
+  document.getElementById('fMaterial').value = '';
+  document.getElementById('fBatch').value    = '';
+  document.getElementById('fQty').value      = '';
+  document.getElementById('fNotes').value    = '';
+  document.getElementById('fDate').value     = NovusCore.todayStr();
+  await loadAdjustments();
+}
+
+async function deleteAdj(id) {
+  if (!confirm(`Delete adjustment ID ${id}?`)) return;
+  await sb.from('adjustments').delete().eq('id', id);
+  NovusCore.toast('Deleted.', 'info');
+  await loadAdjustments();
+}
+
+function exportCSV() {
+  if (!allAdj.length) { NovusCore.toast('No data to export.', 'info'); return; }
+  const h = ['id','posted_date','fiscal_period','material_number','batch_lot','adjustment_qty','category','notes'];
+  const rows = allAdj.map(r => h.map(k => JSON.stringify(r[k]??'')).join(','));
+  const a = document.createElement('a');
+  a.href     = 'data:text/csv,' + encodeURIComponent([h.join(','),...rows].join('\n'));
+  a.download = `adjustments_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
+</script>
+</body>
+</html>
