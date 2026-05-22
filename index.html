@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Login — Inv. Control Hub · Plant 1730</title>
+  <link rel="stylesheet" href="novus-styles.css" />
+</head>
+<body>
+
+  <div class="login-wrap">
+    <div class="login-card">
+      <div class="logo">🏭</div>
+      <h1>Inventory Control Hub</h1>
+      <p class="sub">Novus Foods · Plant 1730<br/>Sign in with your Novus Microsoft account.</p>
+      <button class="btn-login" id="loginBtn">Sign In with Microsoft</button>
+      <p style="margin-top:16px; font-size:11px; color:var(--text-3);" id="status"></p>
+    </div>
+  </div>
+
+  <!-- MSAL — must load before novus-core.js -->
+  <script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+  <script src="novus-core.js"></script>
+  <script>
+    (async () => {
+      const msalInstance = NovusCore.getMsal();
+      await msalInstance.initialize();
+
+      // If returning from a redirect, process the auth code first
+      const response = await msalInstance.handleRedirectPromise();
+
+      // Already logged in — go straight to the dashboard
+      const accounts = msalInstance.getAllAccounts();
+      if (accounts.length > 0) {
+        window.location.href = 'hub.html';
+        return;
+      }
+
+      // Wire up the login button
+      document.getElementById('loginBtn').addEventListener('click', async () => {
+        document.getElementById('status').textContent = 'Redirecting to Microsoft login…';
+        try {
+          await msalInstance.loginRedirect({ scopes: ['openid', 'profile', 'email'] });
+        } catch (err) {
+          document.getElementById('status').textContent = 'Login failed: ' + err.message;
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
