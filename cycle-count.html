@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cycle Count — Inv. Control Hub</title>
+  <link rel="stylesheet" href="novus-styles.css" />
+</head>
+<body>
+
+<nav id="sidebar"></nav>
+
+<main id="main">
+  <div class="page-header">
+    <h1>🔄 Cycle Count & Reconciliation Tracker</h1>
+    <p>Log physical counts against SAP quantities. Variance is calculated automatically.</p>
+  </div>
+
+  <!-- Entry Form -->
+  <div class="card">
+    <div class="card-title">📝 Log a New Count</div>
+
+    <div class="form-grid">
+      <div class="form-group">
+        <label>Material Number *</label>
+        <input id="fMaterial" type="text" placeholder="e.g. MAT-10045" />
+      </div>
+      <div class="form-group">
+        <label>Batch / Lot Number</label>
+        <input id="fBatch" type="text" placeholder="e.g. 250610-A" />
+      </div>
+      <div class="form-group">
+        <label>SAP System Qty *</label>
+        <input id="fSAP" type="number" min="0" step="0.01" placeholder="0.00"
+               oninput="updatePreview()" />
+      </div>
+      <div class="form-group">
+        <label>Physical Floor Qty *</label>
+        <input id="fFloor" type="number" min="0" step="0.01" placeholder="0.00"
+               oninput="updatePreview()" />
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-bottom:12px;">
+      <label>Notes / Location (optional)</label>
+      <input id="fNotes" type="text" placeholder="e.g. Row 7 · Slot 3A — double-checked" />
+    </div>
+
+    <!-- Live variance preview — updates as user types -->
+    <div class="variance-preview" id="preview" style="display:none;">
+      <div class="vp-item">
+        <div class="vp-label">Variance (units)</div>
+        <div class="vp-val" id="pvVariance">—</div>
+      </div>
+      <div class="vp-item">
+        <div class="vp-label">Variance %</div>
+        <div class="vp-val" id="pvPct">—</div>
+      </div>
+      <div class="vp-item">
+        <div class="vp-label">Status</div>
+        <div class="vp-val" id="pvStatus">—</div>
+      </div>
+    </div>
+
+    <button class="btn btn-primary" onclick="submitCount()">💾 Save Count</button>
+  </div>
+
+  <!-- Filters -->
+  <div class="card">
+    <div class="card-title flex items-center justify-between">
+      <span>📋 Count History</span>
+      <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇️ Export CSV</button>
+    </div>
+
+    <div class="filter-bar">
+      <input id="filterMat" type="text" placeholder="🔎 Filter by material…" oninput="applyFilter()" />
+      <select id="filterVar" onchange="applyFilter()">
+        <option value="all">All variance levels</option>
+        <option value="high">High variance only (&gt;0.5%)</option>
+      </select>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>Timestamp</th><th>Material</th><th>Batch</th>
+            <th>SAP Qty</th><th>Floor Qty</th><th>Variance</th><th>Var %</th>
+            <th>Notes</th><th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="countsBody">
+          <tr><td colspan="10" class="text-muted" style="padding:20px;text-align:center;">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="novus-core.js"></script>
+<script>
+let sb, allCounts = [];
+
+(async () => {
+  const account = await NovusCore.requireAuth();
+  if (!account) return;
+  NovusCore.renderNav('cycle-count', account);
+  sb = NovusCore.getSupabase();
+  await loadCounts();
+})();
+
+/* ── Live variance preview ──────────────────────────────────── */
+function updatePreview() {
+  const sap   = parseFloat(document.getElementById('fSAP').value)   || 0;
+  const floor = parseFloat(document.getElementById('fFloor').value) || 0;
+  if (sap === 0 && floor === 0) {
+    document.getElementById('preview').style.display = 'none';
+    return;
+  }
+  const variance = floor - sap;
+  const pct      = sap > 0 ? Math.abs(variance) / sap * 100 : 0;
+  const color    = NovusCore.varColor(pct);
+  const sign     = variance >= 0 ? '+' : '';
+  const statusMap = { green: '✅ Within tolerance', amber: '⚠️ Marginal', red: '🚨 Critical' };
+
+  document.getElementById('preview').style.display = 'flex';
+  document.getElementById('pvVariance').textContent = `${sign}${variance.toFixed(2)}`;
+  document.getElementById('pvVariance').className   = `vp-val ${color}`;
+  document.getElementById('pvPct').textContent      = `${pct.toFixed(2)}%`;
+  document.getElementById('pvPct').className        = `vp-val ${color}`;
+  document.getElementById('pvStatus').textContent   = statusMap[color];
+  document.getElementById('pvStatus').className     = `vp-val ${color}`;
+}
+
+/* ── Submit count ───────────────────────────────────────────── */
+async function submitCount() {
+  const material = document.getElementById('fMaterial').value.trim().toUpperCase();
+  const batch    = document.getElementById('fBatch').value.trim().toUpperCase();
+  const sap      = parseFloat(document.getElementById('fSAP').value)   || 0;
+  const floor    = parseFloat(document.getElementById('fFloor').value) || 0;
+  const notes    = document.getElementById('fNotes').value.trim();
+
+  if (!material) { NovusCore.toast('Material Number is required.', 'error'); return; }
+
+  const variance     = parseFloat((floor - sap).toFixed(4));
+  const variance_pct = sap > 0 ? parseFloat((Math.abs(variance) / sap * 100).toFixed(2)) : 0;
+
+  const { error } = await sb.from('cycle_counts').insert({
+    material_number: material, batch_lot: batch,
+    sap_qty: sap, floor_qty: floor,
+    variance, variance_pct, notes,
+  });
+
+  if (error) { NovusCore.toast('Save failed: ' + error.message, 'error'); return; }
+
+  if (variance_pct > NovusCore.IRA_THRESHOLD * 5) {
+    NovusCore.toast(`⚠️ Saved — but variance is ${variance_pct.toFixed(2)}%. Consider opening an RCA ticket.`, 'info');
+  } else {
+    NovusCore.toast(`✅ Saved — ${material} | Variance: ${variance >= 0 ? '+' : ''}${variance.toFixed(2)} (${variance_pct.toFixed(2)}%)`, 'success');
+  }
+
+  // Reset form fields
+  ['fMaterial','fBatch','fSAP','fFloor','fNotes'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('preview').style.display = 'none';
+  await loadCounts();
+}
+
+/* ── Load & render table ────────────────────────────────────── */
+async function loadCounts() {
+  const { data } = await sb.from('cycle_counts').select('*').order('logged_at', { ascending: false }).limit(1000);
+  allCounts = data || [];
+  applyFilter();
+}
+
+function applyFilter() {
+  let rows = [...allCounts];
+  const matFilter = document.getElementById('filterMat').value.trim().toUpperCase();
+  const varFilter = document.getElementById('filterVar').value;
+  if (matFilter) rows = rows.filter(r => r.material_number.includes(matFilter));
+  if (varFilter === 'high') rows = rows.filter(r => parseFloat(r.variance_pct) > NovusCore.IRA_THRESHOLD);
+  renderTable(rows);
+}
+
+function renderTable(rows) {
+  const tbody = document.getElementById('countsBody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="10" class="empty" style="text-align:center;padding:24px;">No entries found.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(r => {
+    const pct   = parseFloat(r.variance_pct);
+    const color = NovusCore.varColor(pct);
+    const sign  = parseFloat(r.variance) >= 0 ? '+' : '';
+    return `<tr class="row-${color}">
+      <td style="color:var(--text-2)">${r.id}</td>
+      <td style="color:var(--text-2)">${NovusCore.fmtDate(r.logged_at)}</td>
+      <td class="fw-600">${r.material_number}</td>
+      <td>${r.batch_lot || '—'}</td>
+      <td>${parseFloat(r.sap_qty).toFixed(2)}</td>
+      <td>${parseFloat(r.floor_qty).toFixed(2)}</td>
+      <td class="text-${color}">${sign}${parseFloat(r.variance).toFixed(2)}</td>
+      <td><span class="badge badge-${color}">${pct.toFixed(2)}%</span></td>
+      <td style="color:var(--text-2);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.notes || '—'}</td>
+      <td>
+        <button class="btn btn-danger btn-sm" onclick="deleteCount(${r.id})">🗑</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function deleteCount(id) {
+  if (!confirm(`Delete count ID ${id}? This is permanent.`)) return;
+  await sb.from('cycle_counts').delete().eq('id', id);
+  NovusCore.toast('Record deleted.', 'info');
+  await loadCounts();
+}
+
+/* ── CSV export ─────────────────────────────────────────────── */
+function exportCSV() {
+  if (!allCounts.length) { NovusCore.toast('No data to export.', 'info'); return; }
+  const headers = ['id','logged_at','material_number','batch_lot','sap_qty','floor_qty','variance','variance_pct','notes'];
+  const rows = allCounts.map(r => headers.map(h => JSON.stringify(r[h] ?? '')).join(','));
+  const csv  = [headers.join(','), ...rows].join('\n');
+  const a    = document.createElement('a');
+  a.href     = 'data:text/csv,' + encodeURIComponent(csv);
+  a.download = `cycle_counts_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
+</script>
+</body>
+</html>
