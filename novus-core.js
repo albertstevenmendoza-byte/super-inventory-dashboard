@@ -92,6 +92,7 @@ const NovusCore = (() => {
     { id:'cycle-count-report',   href:'cycle-count-report.html',   icon:'📈', label:'Count Report'       },
     { id:'adjustment-tracker',   href:'adjustment-tracker.html',   icon:'📝', label:'Adjustment Tracker' },
     { id:'root-cause',           href:'root-cause.html',           icon:'🔍', label:'Root Cause Log'     },
+    { id:'trends', href:'trends.html', icon:'📈', label:'Trends' },
     { id:'knowledge-base',       href:'knowledge-base.html',       icon:'📚', label:'Knowledge Base'     },
   ];
 
