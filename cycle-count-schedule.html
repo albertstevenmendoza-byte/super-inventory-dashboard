@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Count Schedule — Inv. Control Hub</title>
+  <link rel="stylesheet" href="novus-styles.css" />
+  <style>
+    .zone-grid   { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; margin-bottom: 16px; }
+    .zone-card   {
+      background: var(--bg-600); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 14px 10px;
+      text-align: center; cursor: pointer; transition: all 0.2s;
+      user-select: none;
+    }
+    .zone-card:hover             { border-color: var(--accent); background: var(--bg-700); }
+    .zone-card.counted           { background: var(--green-bg); border-color: var(--green); }
+    .zone-card .zone-name        { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+    .zone-card .zone-date        { font-size: 10px; color: var(--text-2); }
+    .zone-card.counted .zone-name { color: var(--green); }
+    .zone-card .zone-check       { font-size: 20px; margin-bottom: 2px; }
+    .area-label  { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3); margin: 16px 0 8px; }
+    .period-selector { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+    .period-selector select { background:var(--bg-700); border:1px solid var(--border); border-radius:6px; color:var(--text-1); font-size:13px; padding:7px 10px; font-family:var(--font); outline:none; }
+  </style>
+</head>
+<body>
+
+<nav id="sidebar"></nav>
+
+<main id="main">
+  <div class="page-header">
+    <h1>📅 Cycle Count Schedule</h1>
+    <p>Track zone coverage for each fiscal period. Target: all 20 locations counted at least once.</p>
+  </div>
+
+  <!-- Period selector -->
+  <div class="period-selector">
+    <span style="font-size:13px;color:var(--text-2);">Viewing period:</span>
+    <select id="periodSelect" onchange="loadSchedule()"></select>
+    <span id="periodDates" style="font-size:12px;color:var(--text-2);"></span>
+  </div>
+
+  <!-- Progress -->
+  <div class="card">
+    <div class="card-title flex items-center justify-between">
+      <span>Coverage Progress</span>
+      <span id="progressLabel" style="font-size:13px;font-weight:400;color:var(--text-2);"></span>
+    </div>
+    <div class="progress-wrap" style="height:10px;margin-bottom:0;">
+      <div class="progress-fill" id="progressFill" style="width:0%;"></div>
+    </div>
+  </div>
+
+  <!-- Zone grid -->
+  <div class="card" id="zoneGridCard">
+    <div class="card-title">🗂️ Zones</div>
+    <div id="zoneGridContainer">
+      <div style="color:var(--text-2);font-size:13px;">Loading…</div>
+    </div>
+    <p style="font-size:11px;color:var(--text-3);margin-top:12px;">Click a zone to mark it as counted. Click again to undo.</p>
+  </div>
+
+  <!-- Completion log table -->
+  <div class="card">
+    <div class="card-title">✅ Completion Log — Current Period</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Zone</th><th>Area</th><th>Status</th><th>Date Counted</th><th>Notes</th></tr>
+        </thead>
+        <tbody id="logBody">
+          <tr><td colspan="5" style="padding:16px;text-align:center;color:var(--text-2);">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div style="margin-top:12px;">
+      <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇️ Export CSV</button>
+    </div>
+  </div>
+</main>
+
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="novus-core.js"></script>
+<script>
+let sb, scheduleData = [], selectedPeriodMeta;
+
+(async () => {
+  const account = await NovusCore.requireAuth();
+  if (!account) return;
+  NovusCore.renderNav('cycle-count-schedule', account);
+  sb = NovusCore.getSupabase();
+
+  const currentPeriod = NovusCore.getFiscalPeriod();
+  const sel = document.getElementById('periodSelect');
+
+  // Populate period dropdown — most recent first
+  NovusCore.FISCAL_CALENDAR.slice().reverse().forEach(p => {
+    const label = `FY${p.fy}-P${String(p.period).padStart(2,'0')}`;
+    const opt   = document.createElement('option');
+    opt.value   = label;
+    opt.textContent = `${label}  (${p.start} – ${p.end})`;
+    if (currentPeriod && label === currentPeriod.label) opt.selected = true;
+    sel.appendChild(opt);
+  });
+
+  await loadSchedule();
+})();
+
+async function loadSchedule() {
+  const label = document.getElementById('periodSelect').value;
+  selectedPeriodMeta = NovusCore.FISCAL_CALENDAR.find(p => {
+    return `FY${p.fy}-P${String(p.period).padStart(2,'0')}` === label;
+  });
+
+  document.getElementById('periodDates').textContent = selectedPeriodMeta
+    ? `${selectedPeriodMeta.start} → ${selectedPeriodMeta.end}  ·  Q${selectedPeriodMeta.qtr}`
+    : '';
+
+  // Fetch existing rows for this period
+  const { data } = await sb.from('cycle_count_schedule')
+    .select('*').eq('fiscal_period', label);
+  scheduleData = data || [];
+
+  // Seed any missing zones (all 20)
+  const existing = scheduleData.map(r => r.zone);
+  const missing  = NovusCore.ALL_ZONES.filter(z => !existing.includes(z));
+  if (missing.length) {
+    await sb.from('cycle_count_schedule').insert(
+      missing.map(z => ({ fiscal_period: label, zone: z }))
+    );
+    const { data: refreshed } = await sb.from('cycle_count_schedule')
+      .select('*').eq('fiscal_period', label);
+    scheduleData = refreshed || [];
+  }
+
+  renderZoneGrid();
+  renderLogTable();
+  updateProgress();
+}
+
+function getZoneArea(zone) {
+  for (const [area, zones] of Object.entries(NovusCore.ZONES)) {
+    if (zones.includes(zone)) return area;
+  }
+  return 'Other';
+}
+
+function renderZoneGrid() {
+  const container = document.getElementById('zoneGridContainer');
+  let html = '';
+  Object.entries(NovusCore.ZONES).forEach(([area, zones]) => {
+    html += `<div class="area-label">${area}</div><div class="zone-grid">`;
+    zones.forEach(zone => {
+      const row  = scheduleData.find(r => r.zone === zone);
+      const done = row?.completed === 1;
+      const date = row?.completed_date || '';
+      html += `
+        <div class="zone-card ${done ? 'counted' : ''}" onclick="toggleZone('${zone}')">
+          <div class="zone-check">${done ? '✅' : '⬜'}</div>
+          <div class="zone-name">${zone}</div>
+          <div class="zone-date">${done ? date : 'Not counted'}</div>
+        </div>`;
+    });
+    html += '</div>';
+  });
+  container.innerHTML = html;
+}
+
+function updateProgress() {
+  const total   = scheduleData.length;
+  const counted = scheduleData.filter(r => r.completed === 1).length;
+  const pct     = total ? Math.round((counted / total) * 100) : 0;
+  document.getElementById('progressFill').style.width = pct + '%';
+  document.getElementById('progressLabel').textContent = `${counted} / ${total} zones counted  (${pct}%)`;
+  // Color the bar based on completion
+  const fill = document.getElementById('progressFill');
+  fill.style.background = pct === 100 ? 'var(--green)' : pct >= 50 ? 'var(--amber)' : 'var(--red)';
+}
+
+async function toggleZone(zone) {
+  const row  = scheduleData.find(r => r.zone === zone);
+  if (!row) return;
+  const done = row.completed === 1;
+
+  if (done) {
+    // Undo — ask for confirmation
+    if (!confirm(`Unmark ${zone} as counted?`)) return;
+    await sb.from('cycle_count_schedule').update({
+      completed: 0, completed_date: null,
+    }).eq('id', row.id);
+    row.completed      = 0;
+    row.completed_date = null;
+  } else {
+    const today = NovusCore.todayStr();
+    await sb.from('cycle_count_schedule').update({
+      completed: 1, completed_date: today,
+    }).eq('id', row.id);
+    row.completed      = 1;
+    row.completed_date = today;
+    NovusCore.toast(`✅ ${zone} marked as counted.`, 'success');
+  }
+
+  renderZoneGrid();
+  renderLogTable();
+  updateProgress();
+}
+
+function renderLogTable() {
+  const tbody = document.getElementById('logBody');
+  // Sort: counted first, then alphabetically
+  const sorted = [...scheduleData].sort((a, b) => {
+    if (b.completed !== a.completed) return b.completed - a.completed;
+    return a.zone.localeCompare(b.zone);
+  });
+  tbody.innerHTML = sorted.map(r => {
+    const done = r.completed === 1;
+    return `<tr>
+      <td class="fw-600">${r.zone}</td>
+      <td style="color:var(--text-2)">${getZoneArea(r.zone)}</td>
+      <td>${done
+        ? '<span class="badge badge-green">✅ Counted</span>'
+        : '<span class="badge badge-red">⬜ Pending</span>'
+      }</td>
+      <td>${r.completed_date || '—'}</td>
+      <td>${r.notes || '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function exportCSV() {
+  if (!scheduleData.length) { NovusCore.toast('No data.', 'info'); return; }
+  const h    = ['zone','area','completed','completed_date','notes','fiscal_period'];
+  const rows = scheduleData.map(r => [
+    JSON.stringify(r.zone),
+    JSON.stringify(getZoneArea(r.zone)),
+    r.completed ? '"Yes"' : '"No"',
+    JSON.stringify(r.completed_date||''),
+    JSON.stringify(r.notes||''),
+    JSON.stringify(r.fiscal_period),
+  ].join(','));
+  const a = document.createElement('a');
+  a.href     = 'data:text/csv,' + encodeURIComponent([h.join(','),...rows].join('\n'));
+  a.download = `count_schedule_${document.getElementById('periodSelect').value}.csv`;
+  a.click();
+}
+</script>
+</body>
+</html>
