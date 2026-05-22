@@ -1,1 +1,822 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trends — Inv. Control Hub</title>
+  <link rel="stylesheet" href="novus-styles.css" />
+  <style>
+    .trend-grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-bottom:18px; }
+    .trend-grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:18px; margin-bottom:18px; }
+    .chart-box    { background:var(--bg-700); border:1px solid var(--border); border-radius:var(--radius); padding:18px 20px; }
+    .chart-box h3 { font-size:13px; font-weight:700; color:var(--text-1); margin-bottom:4px; }
+    .chart-box p  { font-size:11px; color:var(--text-2); margin-bottom:14px; }
+    .chart-tall   { position:relative; height:280px; }
+    .chart-med    { position:relative; height:220px; }
+    .chart-short  { position:relative; height:180px; }
+    .delta-pill {
+      display:inline-flex; align-items:center; gap:4px;
+      font-size:11px; font-weight:600; padding:2px 8px;
+      border-radius:999px; margin-left:8px;
+    }
+    .delta-up   { background:var(--green-bg); color:var(--green); }
+    .delta-down { background:var(--red-bg);   color:var(--red);   }
+    .delta-flat { background:var(--bg-600);   color:var(--text-2);}
+    .material-row {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:8px 12px; border-bottom:1px solid var(--border);
+      font-size:13px;
+    }
+    .material-row:last-child { border-bottom:none; }
+    .mat-bar-wrap { flex:1; margin:0 12px; background:var(--bg-600); border-radius:999px; height:6px; overflow:hidden; }
+    .mat-bar-fill { height:100%; border-radius:999px; }
+    .zone-heat { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
+    .zone-cell {
+      aspect-ratio:1; border-radius:4px; display:flex; flex-direction:column;
+      align-items:center; justify-content:center; font-size:10px; font-weight:700;
+      cursor:default; transition:opacity 0.2s;
+    }
+    .zone-cell .zc-name { font-size:9px; margin-bottom:2px; }
+    .zone-cell .zc-pct  { font-size:11px; font-weight:700; }
+    .section-header {
+      font-size:11px; font-weight:700; letter-spacing:0.1em;
+      text-transform:uppercase; color:var(--text-3);
+      margin:24px 0 12px;
+    }
+    .period-range {
+      display:flex; align-items:center; gap:10px; margin-bottom:24px; flex-wrap:wrap;
+    }
+    .period-range select, .period-range input {
+      background:var(--bg-700); border:1px solid var(--border);
+      border-radius:6px; color:var(--text-1); font-size:13px;
+      padding:7px 10px; font-family:var(--font); outline:none;
+    }
+    .loading-overlay {
+      position:fixed; inset:0; background:rgba(13,17,23,0.7);
+      display:flex; align-items:center; justify-content:center;
+      z-index:999; flex-direction:column; gap:14px;
+    }
+    .loading-spinner {
+      width:40px; height:40px; border:3px solid var(--border);
+      border-top-color:var(--accent); border-radius:50%;
+      animation:spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    @media (max-width:900px) {
+      .trend-grid-2, .trend-grid-3 { grid-template-columns:1fr; }
+    }
+  </style>
+</head>
+<body>
 
+<!-- Loading overlay -->
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="loading-spinner"></div>
+  <div style="color:var(--text-2);font-size:13px;">Loading all historical data…</div>
+</div>
+
+<nav id="sidebar"></nav>
+
+<main id="main">
+  <div class="page-header">
+    <h1>📈 Trends & Historical Analysis</h1>
+    <p>Across all imported fiscal periods — IRA, adjustments, zone coverage, and recurring materials.</p>
+  </div>
+
+  <!-- Period range selector -->
+  <div class="period-range">
+    <span style="font-size:13px;color:var(--text-2);">Show periods:</span>
+    <select id="rangeFrom" onchange="applyRange()"></select>
+    <span style="color:var(--text-2);">→</span>
+    <select id="rangeTo"   onchange="applyRange()"></select>
+    <button class="btn btn-ghost btn-sm" onclick="selectAllPeriods()">All Periods</button>
+    <span id="rangeInfo" style="font-size:12px;color:var(--text-2);margin-left:4px;"></span>
+  </div>
+
+  <!-- ── SECTION 1: IRA TRENDS ─────────────────────────────── -->
+  <div class="section-header">📐 Inventory Record Accuracy</div>
+
+  <div class="kpi-grid" style="margin-bottom:18px;">
+    <div class="kpi-card green">
+      <div class="kpi-label">Best Period IRA</div>
+      <div class="kpi-value" id="bestIRA">—</div>
+      <div class="kpi-sub" id="bestIRAPeriod">—</div>
+    </div>
+    <div class="kpi-card red">
+      <div class="kpi-label">Worst Period IRA</div>
+      <div class="kpi-value" id="worstIRA">—</div>
+      <div class="kpi-sub" id="worstIRAPeriod">—</div>
+    </div>
+    <div class="kpi-card blue">
+      <div class="kpi-label">Avg IRA (all periods)</div>
+      <div class="kpi-value" id="avgIRA">—</div>
+      <div class="kpi-sub">across selected range</div>
+    </div>
+    <div class="kpi-card blue">
+      <div class="kpi-label">Total Lines Counted</div>
+      <div class="kpi-value" id="totalLines">—</div>
+      <div class="kpi-sub">across selected range</div>
+    </div>
+    <div class="kpi-card amber">
+      <div class="kpi-label">IRA Trend</div>
+      <div class="kpi-value" id="iraTrend">—</div>
+      <div class="kpi-sub">vs. prior period</div>
+    </div>
+  </div>
+
+  <div class="trend-grid-2">
+    <div class="chart-box">
+      <h3>IRA % by Fiscal Period</h3>
+      <p>Target line at 95%. Red = below target.</p>
+      <div class="chart-tall"><canvas id="iraLineChart"></canvas></div>
+    </div>
+    <div class="chart-box">
+      <h3>Accurate vs. Inaccurate Count Lines</h3>
+      <p>Stacked bar — volume of counts per period.</p>
+      <div class="chart-tall"><canvas id="iraStackChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- ── SECTION 2: ADJUSTMENT TRENDS ──────────────────────── -->
+  <div class="section-header">📝 Adjustment Trends</div>
+
+  <div class="kpi-grid" style="margin-bottom:18px;">
+    <div class="kpi-card red">
+      <div class="kpi-label">Total $ Adjusted</div>
+      <div class="kpi-value" id="totalAdjAmt">—</div>
+      <div class="kpi-sub">net across range</div>
+    </div>
+    <div class="kpi-card amber">
+      <div class="kpi-label">Avg $ / Period</div>
+      <div class="kpi-value" id="avgAdjAmt">—</div>
+      <div class="kpi-sub">net average</div>
+    </div>
+    <div class="kpi-card red">
+      <div class="kpi-label">Worst Period ($)</div>
+      <div class="kpi-value" id="worstAdjPeriodAmt">—</div>
+      <div class="kpi-sub" id="worstAdjPeriodLabel">—</div>
+    </div>
+    <div class="kpi-card blue">
+      <div class="kpi-label">Total Adjustments</div>
+      <div class="kpi-value" id="totalAdjCount">—</div>
+      <div class="kpi-sub">entries across range</div>
+    </div>
+    <div class="kpi-card red">
+      <div class="kpi-label">Over $1,000</div>
+      <div class="kpi-value" id="totalOver1k">—</div>
+      <div class="kpi-sub">high-value adjustments</div>
+    </div>
+  </div>
+
+  <div class="trend-grid-2">
+    <div class="chart-box">
+      <h3>Net $ Adjustment by Period</h3>
+      <p>Negative = inventory loss. Each bar is one fiscal period.</p>
+      <div class="chart-tall"><canvas id="adjAmtChart"></canvas></div>
+    </div>
+    <div class="chart-box">
+      <h3>Adjustment Category Mix by Period</h3>
+      <p>Stacked — which reasons are driving your adjustments.</p>
+      <div class="chart-tall"><canvas id="adjCatChart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="trend-grid-2">
+    <div class="chart-box">
+      <h3>Adjustment Volume by Period</h3>
+      <p>Number of adjustment entries per fiscal period.</p>
+      <div class="chart-med"><canvas id="adjCountChart"></canvas></div>
+    </div>
+    <div class="chart-box">
+      <h3>High-Value Adjustments (≥$1,000) by Period</h3>
+      <p>Count of individual lines crossing the $1,000 threshold.</p>
+      <div class="chart-med"><canvas id="adjOver1kChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- ── SECTION 3: RECURRING MATERIALS ────────────────────── -->
+  <div class="section-header">🔁 Recurring Problem Materials</div>
+
+  <div class="trend-grid-2">
+    <div class="chart-box">
+      <h3>Top 10 Materials by Adjustment Frequency</h3>
+      <p>Materials appearing most often in adjustments — systemic issues.</p>
+      <div id="topAdjMaterials"></div>
+    </div>
+    <div class="chart-box">
+      <h3>Top 10 Materials by Total $ Impact</h3>
+      <p>Highest cumulative dollar value adjusted — financial risk.</p>
+      <div id="topAdjAmtMaterials"></div>
+    </div>
+  </div>
+
+  <div class="trend-grid-2">
+    <div class="chart-box">
+      <h3>Top 10 Materials by Cycle Count Variance Frequency</h3>
+      <p>Materials counted with a variance most often.</p>
+      <div id="topCCMaterials"></div>
+    </div>
+    <div class="chart-box">
+      <h3>Top 10 Materials by Avg Variance %</h3>
+      <p>Consistently inaccurate materials — candidates for root cause investigation.</p>
+      <div id="topCCVarMaterials"></div>
+    </div>
+  </div>
+
+  <!-- ── SECTION 4: ZONE COVERAGE ──────────────────────────── -->
+  <div class="section-header">🗺️ Zone Coverage Heatmap</div>
+
+  <div class="trend-grid-2">
+    <div class="chart-box">
+      <h3>Zone Coverage Rate Across All Periods</h3>
+      <p>How consistently each zone gets counted. Darker = more coverage.</p>
+      <div id="zoneHeatmap" style="margin-top:8px;"></div>
+    </div>
+    <div class="chart-box">
+      <h3>Average Variance % by Zone</h3>
+      <p>Which zones have the highest average variance — focus your attention here.</p>
+      <div class="chart-tall"><canvas id="zoneVarChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- ── SECTION 5: DAILY DETAIL ───────────────────────────── -->
+  <div class="section-header">📅 Daily Adjustment Detail</div>
+  <div class="chart-box" style="margin-bottom:18px;">
+    <h3>Daily Net $ Adjustment</h3>
+    <p>Each point is one day — shows spikes and patterns within periods.</p>
+    <div class="chart-tall"><canvas id="dailyAdjChart"></canvas></div>
+  </div>
+
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="novus-core.js"></script>
+<script>
+
+/* ── Global chart registry (destroy before redraw) ─────────── */
+const CHARTS = {};
+function destroyChart(id) { if (CHARTS[id]) { CHARTS[id].destroy(); delete CHARTS[id]; } }
+
+/* ── Chart.js global defaults ───────────────────────────────── */
+Chart.defaults.color          = '#94a3b8';
+Chart.defaults.borderColor    = '#1e2d40';
+Chart.defaults.font.family    = 'Inter, system-ui, sans-serif';
+Chart.defaults.font.size      = 11;
+
+/* ── Color palette ──────────────────────────────────────────── */
+const CAT_COLORS = {
+  'Inventory Difference': '#ef4444',
+  'Shipping Adjustment':  '#3b82f6',
+  'Sampling':             '#a855f7',
+  'Disposals':            '#f59e0b',
+  'Damaged':              '#f97316',
+};
+
+/* ── Raw data stores ────────────────────────────────────────── */
+let allCounts = [], allAdj = [], allSchedule = [];
+let activePeriods = [];   // ordered list of period labels in selected range
+
+/* ════════════════════════════════════════════════════════════
+   INITIALISE
+════════════════════════════════════════════════════════════ */
+(async () => {
+  NovusCore.renderNav('trends');
+  const sb = NovusCore.getSupabase();
+
+  // Fetch everything in parallel
+  const [ccRes, adjRes, schedRes] = await Promise.all([
+    sb.from('cycle_counts').select('fiscal_period,zone,storage_bin,variance_pct,variance,difference_value,material_number,material_description,logged_at,source'),
+    sb.from('adjustments').select('fiscal_period,posted_date,category,adjustment_qty,amount_lc,material_number,material_description'),
+    sb.from('cycle_count_schedule').select('fiscal_period,zone,completed'),
+  ]);
+
+  allCounts   = ccRes.data   || [];
+  allAdj      = adjRes.data  || [];
+  allSchedule = schedRes.data|| [];
+
+  buildPeriodSelectors();
+  document.getElementById('loadingOverlay').style.display = 'none';
+  applyRange();
+})();
+
+/* ════════════════════════════════════════════════════════════
+   PERIOD SELECTORS
+════════════════════════════════════════════════════════════ */
+function buildPeriodSelectors() {
+  // Collect all periods that actually have data
+  const dataPeriodsSet = new Set([
+    ...allCounts.map(r => r.fiscal_period),
+    ...allAdj.map(r => r.fiscal_period),
+  ].filter(Boolean));
+
+  // Use fiscal calendar order; fall back to data-derived if outside calendar
+  const calLabels = NovusCore.FISCAL_CALENDAR.map(p =>
+    `FY${p.fy}-P${String(p.period).padStart(2,'0')}`
+  );
+  const ordered = calLabels.filter(l => dataPeriodsSet.has(l));
+  // Add any periods in data not in calendar (e.g. UNKNOWN)
+  dataPeriodsSet.forEach(l => { if (!ordered.includes(l) && l !== 'UNKNOWN') ordered.push(l); });
+
+  const from = document.getElementById('rangeFrom');
+  const to   = document.getElementById('rangeTo');
+  ordered.forEach(label => {
+    const fp = NovusCore.FISCAL_CALENDAR.find(p =>
+      `FY${p.fy}-P${String(p.period).padStart(2,'0')}` === label
+    );
+    const text = fp ? `${label}  (${fp.start})` : label;
+    [from, to].forEach(sel => {
+      const opt = document.createElement('option');
+      opt.value = label; opt.textContent = text;
+      sel.appendChild(opt);
+    });
+  });
+
+  // Default: from = earliest, to = latest (current period)
+  if (ordered.length) {
+    from.value = ordered[0];
+    to.value   = ordered[ordered.length - 1];
+  }
+  activePeriods = ordered;
+}
+
+function selectAllPeriods() {
+  const opts = Array.from(document.getElementById('rangeFrom').options).map(o => o.value);
+  if (!opts.length) return;
+  document.getElementById('rangeFrom').value = opts[0];
+  document.getElementById('rangeTo').value   = opts[opts.length - 1];
+  applyRange();
+}
+
+function applyRange() {
+  const from  = document.getElementById('rangeFrom').value;
+  const to    = document.getElementById('rangeTo').value;
+  const allOpts = Array.from(document.getElementById('rangeFrom').options).map(o => o.value);
+  const iFrom = allOpts.indexOf(from);
+  const iTo   = allOpts.indexOf(to);
+  if (iFrom < 0 || iTo < 0) return;
+  const start = Math.min(iFrom, iTo);
+  const end   = Math.max(iFrom, iTo);
+  activePeriods = allOpts.slice(start, end + 1);
+  document.getElementById('rangeInfo').textContent =
+    `${activePeriods.length} period${activePeriods.length !== 1 ? 's' : ''} selected`;
+  renderAll();
+}
+
+/* ════════════════════════════════════════════════════════════
+   FILTER HELPERS
+════════════════════════════════════════════════════════════ */
+function countsInRange() { return allCounts.filter(r => activePeriods.includes(r.fiscal_period)); }
+function adjInRange()    { return allAdj.filter(r    => activePeriods.includes(r.fiscal_period)); }
+
+/* ════════════════════════════════════════════════════════════
+   MAIN RENDER — calls all sub-renders
+════════════════════════════════════════════════════════════ */
+function renderAll() {
+  renderIRASection();
+  renderAdjSection();
+  renderMaterialsSection();
+  renderZoneSection();
+  renderDailyChart();
+}
+
+/* ════════════════════════════════════════════════════════════
+   SECTION 1 — IRA TRENDS
+════════════════════════════════════════════════════════════ */
+function renderIRASection() {
+  const counts = countsInRange();
+
+  // Per-period IRA
+  const byPeriod = groupBy(counts, 'fiscal_period');
+  const periodIRA = activePeriods.map(p => {
+    const rows = byPeriod[p] || [];
+    const ira  = NovusCore.calcIRA(rows);
+    return { period:p, ira: ira.ira !== null ? parseFloat(ira.ira) : null,
+             total:ira.total, accurate:ira.accurate, inaccurate:ira.inaccurate };
+  }).filter(d => d.total > 0);
+
+  if (!periodIRA.length) {
+    ['bestIRA','worstIRA','avgIRA','totalLines','iraTrend'].forEach(id =>
+      document.getElementById(id).textContent = 'No data');
+    return;
+  }
+
+  const validIRA = periodIRA.filter(d => d.ira !== null);
+  const best     = validIRA.reduce((a,b) => a.ira >= b.ira ? a : b);
+  const worst    = validIRA.reduce((a,b) => a.ira <= b.ira ? a : b);
+  const avg      = validIRA.reduce((s,d) => s + d.ira, 0) / validIRA.length;
+  const total    = periodIRA.reduce((s,d) => s + d.total, 0);
+
+  document.getElementById('bestIRA').textContent       = best.ira.toFixed(1) + '%';
+  document.getElementById('bestIRAPeriod').textContent = best.period;
+  document.getElementById('worstIRA').textContent      = worst.ira.toFixed(1) + '%';
+  document.getElementById('worstIRAPeriod').textContent= worst.period;
+  document.getElementById('avgIRA').textContent        = avg.toFixed(1) + '%';
+  document.getElementById('totalLines').textContent    = total.toLocaleString();
+
+  // Trend vs prior period
+  if (validIRA.length >= 2) {
+    const last = validIRA[validIRA.length - 1].ira;
+    const prev = validIRA[validIRA.length - 2].ira;
+    const diff = last - prev;
+    const sign = diff >= 0 ? '▲ +' : '▼ ';
+    document.getElementById('iraTrend').textContent = `${sign}${Math.abs(diff).toFixed(1)}%`;
+    document.getElementById('iraTrend').style.color = diff >= 0 ? 'var(--green)' : 'var(--red)';
+  } else {
+    document.getElementById('iraTrend').textContent = '—';
+  }
+
+  const labels = periodIRA.map(d => d.period.replace('FY','').replace('-P','/P'));
+
+  // IRA line chart
+  destroyChart('iraLine');
+  CHARTS['iraLine'] = new Chart(document.getElementById('iraLineChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'IRA %',
+          data: periodIRA.map(d => d.ira),
+          borderColor: '#3b82f6',
+          backgroundColor: 'rgba(59,130,246,0.08)',
+          fill: true,
+          tension: 0.3,
+          pointBackgroundColor: periodIRA.map(d =>
+            d.ira >= 95 ? '#22c55e' : d.ira >= 85 ? '#f59e0b' : '#ef4444'),
+          pointRadius: 5,
+        },
+        {
+          label: '95% Target',
+          data: periodIRA.map(() => 95),
+          borderColor: '#22c55e',
+          borderDash: [6,3],
+          borderWidth: 1.5,
+          pointRadius: 0,
+          fill: false,
+        }
+      ]
+    },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      scales: {
+        y: { min:0, max:100, grid:{color:'#1e2d40'}, ticks:{callback:v=>v+'%'} },
+        x: { grid:{color:'#1e2d40'} }
+      },
+      plugins: { legend:{labels:{boxWidth:12}} }
+    }
+  });
+
+  // Stacked accurate/inaccurate bar
+  destroyChart('iraStack');
+  CHARTS['iraStack'] = new Chart(document.getElementById('iraStackChart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label:'✅ Accurate',   data:periodIRA.map(d=>d.accurate),   backgroundColor:'#22c55e', stack:'s' },
+        { label:'❌ Inaccurate', data:periodIRA.map(d=>d.inaccurate), backgroundColor:'#ef4444', stack:'s' },
+      ]
+    },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      scales: {
+        x: { stacked:true, grid:{color:'#1e2d40'} },
+        y: { stacked:true, grid:{color:'#1e2d40'} }
+      },
+      plugins:{ legend:{labels:{boxWidth:12}} }
+    }
+  });
+}
+
+/* ════════════════════════════════════════════════════════════
+   SECTION 2 — ADJUSTMENT TRENDS
+════════════════════════════════════════════════════════════ */
+function renderAdjSection() {
+  const adjs = adjInRange();
+  if (!adjs.length) return;
+
+  const byPeriod = groupBy(adjs, 'fiscal_period');
+
+  const periodData = activePeriods.map(p => {
+    const rows   = byPeriod[p] || [];
+    const netAmt = rows.reduce((s,r) => s + parseFloat(r.amount_lc||0), 0);
+    const netQty = rows.reduce((s,r) => s + parseFloat(r.adjustment_qty||0), 0);
+    const over1k = rows.filter(r => Math.abs(parseFloat(r.amount_lc||0)) >= 1000).length;
+    const catTotals = {};
+    NovusCore.ADJ_CATEGORIES.forEach(c => catTotals[c] = 0);
+    rows.forEach(r => { catTotals[r.category] = (catTotals[r.category]||0) + parseFloat(r.amount_lc||0); });
+    return { period:p, rows, netAmt, netQty, over1k, catTotals, count:rows.length };
+  }).filter(d => d.count > 0);
+
+  if (!periodData.length) return;
+
+  const totalAmt  = periodData.reduce((s,d) => s+d.netAmt, 0);
+  const avgAmt    = totalAmt / periodData.length;
+  const worst     = periodData.reduce((a,b) => Math.abs(a.netAmt) >= Math.abs(b.netAmt) ? a : b);
+  const totalCnt  = periodData.reduce((s,d) => s+d.count, 0);
+  const totalOver = periodData.reduce((s,d) => s+d.over1k, 0);
+
+  const fmt = v => (v>=0?'+$':'-$') + Math.abs(v).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});
+
+  document.getElementById('totalAdjAmt').textContent       = fmt(totalAmt);
+  document.getElementById('avgAdjAmt').textContent         = fmt(avgAmt);
+  document.getElementById('worstAdjPeriodAmt').textContent = fmt(worst.netAmt);
+  document.getElementById('worstAdjPeriodLabel').textContent = worst.period;
+  document.getElementById('totalAdjCount').textContent     = totalCnt.toLocaleString();
+  document.getElementById('totalOver1k').textContent       = totalOver.toLocaleString();
+
+  const labels = periodData.map(d => d.period.replace('FY','').replace('-P','/P'));
+
+  // Net $ bar
+  destroyChart('adjAmt');
+  CHARTS['adjAmt'] = new Chart(document.getElementById('adjAmtChart'), {
+    type:'bar',
+    data:{
+      labels,
+      datasets:[{
+        label:'Net $ Adjustment',
+        data: periodData.map(d=>d.netAmt),
+        backgroundColor: periodData.map(d=>d.netAmt<0?'rgba(239,68,68,0.7)':'rgba(34,197,94,0.7)'),
+        borderColor:     periodData.map(d=>d.netAmt<0?'#ef4444':'#22c55e'),
+        borderWidth:1,
+        borderRadius:4,
+      }]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      scales:{
+        y:{grid:{color:'#1e2d40'},ticks:{callback:v=>'$'+v.toLocaleString()}},
+        x:{grid:{color:'#1e2d40'}}
+      },
+      plugins:{legend:{display:false}}
+    }
+  });
+
+  // Category stacked bar ($ amounts)
+  destroyChart('adjCat');
+  CHARTS['adjCat'] = new Chart(document.getElementById('adjCatChart'), {
+    type:'bar',
+    data:{
+      labels,
+      datasets: NovusCore.ADJ_CATEGORIES.map(cat=>({
+        label:cat,
+        data: periodData.map(d => d.catTotals[cat]||0),
+        backgroundColor: CAT_COLORS[cat] || '#64748b',
+        stack:'s',
+        borderRadius:2,
+      }))
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      scales:{
+        x:{stacked:true,grid:{color:'#1e2d40'}},
+        y:{stacked:true,grid:{color:'#1e2d40'},ticks:{callback:v=>'$'+v.toLocaleString()}}
+      },
+      plugins:{legend:{labels:{boxWidth:10,font:{size:10}}}}
+    }
+  });
+
+  // Count bar
+  destroyChart('adjCount');
+  CHARTS['adjCount'] = new Chart(document.getElementById('adjCountChart'), {
+    type:'bar',
+    data:{
+      labels,
+      datasets:[{
+        label:'# Adjustments',
+        data:periodData.map(d=>d.count),
+        backgroundColor:'rgba(59,130,246,0.6)',
+        borderRadius:4,
+      }]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      scales:{y:{grid:{color:'#1e2d40'}},x:{grid:{color:'#1e2d40'}}},
+      plugins:{legend:{display:false}}
+    }
+  });
+
+  // Over $1k bar
+  destroyChart('adjOver1k');
+  CHARTS['adjOver1k'] = new Chart(document.getElementById('adjOver1kChart'), {
+    type:'bar',
+    data:{
+      labels,
+      datasets:[{
+        label:'Adj. ≥ $1,000',
+        data:periodData.map(d=>d.over1k),
+        backgroundColor:'rgba(239,68,68,0.6)',
+        borderRadius:4,
+      }]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      scales:{y:{grid:{color:'#1e2d40'}},x:{grid:{color:'#1e2d40'}}},
+      plugins:{legend:{display:false}}
+    }
+  });
+}
+
+/* ════════════════════════════════════════════════════════════
+   SECTION 3 — RECURRING MATERIALS
+════════════════════════════════════════════════════════════ */
+function renderMaterialsSection() {
+  const adjs   = adjInRange();
+  const counts = countsInRange();
+
+  // Top by adjustment frequency
+  const adjFreq = {};
+  adjs.forEach(r => {
+    const key = `${r.material_number}||${r.material_description||''}`;
+    adjFreq[key] = (adjFreq[key]||0) + 1;
+  });
+  renderMaterialBar('topAdjMaterials', adjFreq, '#3b82f6', 'appearances');
+
+  // Top by $ amount
+  const adjAmt = {};
+  adjs.forEach(r => {
+    const key = `${r.material_number}||${r.material_description||''}`;
+    adjAmt[key] = (adjAmt[key]||0) + Math.abs(parseFloat(r.amount_lc||0));
+  });
+  renderMaterialBar('topAdjAmtMaterials', adjAmt, '#ef4444', '', true);
+
+  // Top by CC variance frequency
+  const ccFreq = {};
+  counts.filter(r=>parseFloat(r.variance_pct)>NovusCore.IRA_THRESHOLD).forEach(r => {
+    const key = `${r.material_number}||${r.material_description||''}`;
+    ccFreq[key] = (ccFreq[key]||0) + 1;
+  });
+  renderMaterialBar('topCCMaterials', ccFreq, '#f59e0b', 'variances');
+
+  // Top by avg variance %
+  const ccVarSum={}, ccVarCnt={};
+  counts.forEach(r=>{
+    const key=`${r.material_number}||${r.material_description||''}`;
+    ccVarSum[key]=(ccVarSum[key]||0)+parseFloat(r.variance_pct||0);
+    ccVarCnt[key]=(ccVarCnt[key]||0)+1;
+  });
+  const ccAvgVar={};
+  Object.keys(ccVarSum).forEach(k=>{ if(ccVarCnt[k]>=2) ccAvgVar[k]=ccVarSum[k]/ccVarCnt[k]; });
+  renderMaterialBar('topCCVarMaterials', ccAvgVar, '#a855f7', '%', false, true);
+}
+
+function renderMaterialBar(containerId, dataObj, color, unit, isDollar=false, isPct=false) {
+  const container = document.getElementById(containerId);
+  const sorted = Object.entries(dataObj)
+    .sort((a,b)=>b[1]-a[1])
+    .slice(0,10);
+
+  if (!sorted.length) {
+    container.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-2);font-size:13px;">No data in selected range.</div>`;
+    return;
+  }
+  const max = sorted[0][1];
+  container.innerHTML = sorted.map(([key, val]) => {
+    const [matNum, matDesc] = key.split('||');
+    const pct  = max > 0 ? (val/max)*100 : 0;
+    const disp = isDollar ? '$'+val.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})
+               : isPct    ? val.toFixed(1)+'%'
+               :             val+' '+unit;
+    return `<div class="material-row">
+      <div style="min-width:70px;font-weight:600;font-size:12px;">${matNum}</div>
+      <div class="mat-bar-wrap">
+        <div class="mat-bar-fill" style="width:${pct}%;background:${color};opacity:0.7;"></div>
+      </div>
+      <div style="min-width:80px;text-align:right;font-size:12px;color:var(--text-2);">${disp}</div>
+    </div>
+    ${matDesc ? `<div style="padding:0 12px 6px;font-size:11px;color:var(--text-3);">${matDesc}</div>` : ''}`;
+  }).join('');
+}
+
+/* ════════════════════════════════════════════════════════════
+   SECTION 4 — ZONE COVERAGE
+════════════════════════════════════════════════════════════ */
+function renderZoneSection() {
+  const counts   = countsInRange();
+  const schedule = allSchedule.filter(r => activePeriods.includes(r.fiscal_period));
+
+  // Zone heatmap — % of periods each zone was counted
+  const zonePeriodCoverage = {};
+  NovusCore.ALL_ZONES.forEach(z => {
+    const scheduled = schedule.filter(r => r.zone===z);
+    const completed = scheduled.filter(r => r.completed===1||r.completed===true).length;
+    const total     = activePeriods.length;
+    zonePeriodCoverage[z] = total > 0 ? Math.round((completed/total)*100) : 0;
+  });
+
+  const heatContainer = document.getElementById('zoneHeatmap');
+  heatContainer.innerHTML = Object.entries(NovusCore.ZONES).map(([area, zones]) =>
+    `<div style="margin-bottom:12px;">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-3);margin-bottom:6px;">${area}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;">
+        ${zones.map(z => {
+          const pct = zonePeriodCoverage[z]||0;
+          const alpha = 0.15 + (pct/100)*0.85;
+          const bg    = pct===100 ? `rgba(34,197,94,${alpha})`
+                      : pct>= 50 ? `rgba(245,158,11,${alpha})`
+                      :             `rgba(239,68,68,${alpha})`;
+          const fg = pct >= 50 ? '#f1f5f9' : '#94a3b8';
+          return `<div style="background:${bg};color:${fg};border-radius:6px;padding:8px 10px;text-align:center;min-width:56px;">
+            <div style="font-size:11px;font-weight:700;">${z}</div>
+            <div style="font-size:10px;margin-top:2px;">${pct}%</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`
+  ).join('');
+
+  // Zone avg variance %
+  const zoneVarSum={}, zoneVarCnt={};
+  counts.filter(r=>r.zone).forEach(r=>{
+    const z=r.zone;
+    zoneVarSum[z]=(zoneVarSum[z]||0)+parseFloat(r.variance_pct||0);
+    zoneVarCnt[z]=(zoneVarCnt[z]||0)+1;
+  });
+  const zoneAvg = NovusCore.ALL_ZONES.map(z=>({
+    zone:z,
+    avg: zoneVarCnt[z] ? zoneVarSum[z]/zoneVarCnt[z] : 0,
+    cnt: zoneVarCnt[z]||0,
+  })).filter(d=>d.cnt>0).sort((a,b)=>b.avg-a.avg);
+
+  destroyChart('zoneVar');
+  CHARTS['zoneVar'] = new Chart(document.getElementById('zoneVarChart'), {
+    type:'bar',
+    data:{
+      labels: zoneAvg.map(d=>d.zone),
+      datasets:[{
+        label:'Avg Variance %',
+        data: zoneAvg.map(d=>parseFloat(d.avg.toFixed(2))),
+        backgroundColor: zoneAvg.map(d=>
+          d.avg<=NovusCore.IRA_THRESHOLD ? 'rgba(34,197,94,0.6)'
+          : d.avg<=NovusCore.IRA_THRESHOLD*5 ? 'rgba(245,158,11,0.6)'
+          : 'rgba(239,68,68,0.6)'
+        ),
+        borderRadius:4,
+      }]
+    },
+    options:{
+      indexAxis:'y',
+      responsive:true,maintainAspectRatio:false,
+      scales:{
+        x:{grid:{color:'#1e2d40'},ticks:{callback:v=>v+'%'}},
+        y:{grid:{color:'#1e2d40'}}
+      },
+      plugins:{legend:{display:false}}
+    }
+  });
+}
+
+/* ════════════════════════════════════════════════════════════
+   SECTION 5 — DAILY ADJUSTMENT CHART
+════════════════════════════════════════════════════════════ */
+function renderDailyChart() {
+  const adjs = adjInRange().filter(r => r.posted_date);
+  if (!adjs.length) return;
+
+  const byDay = {};
+  adjs.forEach(r => {
+    const d = r.posted_date.slice(0,10);
+    byDay[d] = (byDay[d]||0) + parseFloat(r.amount_lc||0);
+  });
+
+  const days   = Object.keys(byDay).sort();
+  const values = days.map(d=>byDay[d]);
+
+  destroyChart('dailyAdj');
+  CHARTS['dailyAdj'] = new Chart(document.getElementById('dailyAdjChart'), {
+    type:'bar',
+    data:{
+      labels:days,
+      datasets:[{
+        label:'Net $ Adjustment',
+        data:values,
+        backgroundColor: values.map(v=>v<0?'rgba(239,68,68,0.6)':'rgba(34,197,94,0.6)'),
+        borderRadius:2,
+      }]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      scales:{
+        y:{grid:{color:'#1e2d40'},ticks:{callback:v=>'$'+v.toLocaleString()}},
+        x:{grid:{color:'#1e2d40'},ticks:{maxTicksLimit:20,maxRotation:45}}
+      },
+      plugins:{legend:{display:false}}
+    }
+  });
+}
+
+/* ════════════════════════════════════════════════════════════
+   UTILITY
+════════════════════════════════════════════════════════════ */
+function groupBy(arr, key) {
+  return arr.reduce((acc, r) => {
+    const k = r[key];
+    if (!acc[k]) acc[k] = [];
+    acc[k].push(r);
+    return acc;
+  }, {});
+}
+</script>
+</body>
+</html>
