@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Knowledge Base — Inv. Control Hub</title>
+  <link rel="stylesheet" href="novus-styles.css" />
+</head>
+<body>
+
+<nav id="sidebar"></nav>
+
+<main id="main">
+  <div class="page-header">
+    <h1>📚 Living Knowledge Base</h1>
+    <p>View, add, and edit Standard Operating Procedures (SOPs) and One Point Lessons (OPLs).</p>
+  </div>
+
+  <!-- Add document -->
+  <div class="card">
+    <div class="card-title">➕ Add a New Document</div>
+    <div class="form-grid">
+      <div class="form-group" style="grid-column:span 2;">
+        <label>Document Title *</label>
+        <input id="fTitle" type="text" placeholder="e.g. SOP-001: Cycle Count Procedure for Lines 2A/2E" />
+      </div>
+      <div class="form-group">
+        <label>Document Type *</label>
+        <select id="fType">
+          <option value="SOP">SOP — Standard Operating Procedure</option>
+          <option value="OPL">OPL — One Point Lesson</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group" style="margin-bottom:14px;">
+      <label>Content *</label>
+      <textarea id="fContent" style="min-height:140px;"
+        placeholder="Write the full SOP or OPL here.&#10;&#10;Suggested structure:&#10;PURPOSE: ...&#10;SCOPE: ...&#10;STEPS:&#10;  1. ...&#10;  2. ...&#10;SAFETY NOTES: ...&#10;REVISION HISTORY: ..."></textarea>
+    </div>
+    <button class="btn btn-primary" onclick="addDoc()">💾 Save Document</button>
+  </div>
+
+  <!-- Search & filter -->
+  <div class="filter-bar">
+    <input id="filterSearch" type="text" placeholder="🔎 Search by title or content…" oninput="applyFilter()" />
+    <select id="filterType" onchange="applyFilter()">
+      <option value="all">All types</option>
+      <option value="SOP">SOPs only</option>
+      <option value="OPL">OPLs only</option>
+    </select>
+    <span id="docCount" style="color:var(--text-2);font-size:12px;margin-left:auto;"></span>
+    <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇️ Export CSV</button>
+  </div>
+
+  <!-- Document cards -->
+  <div id="docList">
+    <div class="text-muted" style="padding:20px;text-align:center;">Loading…</div>
+  </div>
+</main>
+
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="novus-core.js"></script>
+<script>
+let sb, allDocs = [];
+
+(async () => {
+  const account = await NovusCore.requireAuth();
+  if (!account) return;
+  NovusCore.renderNav('knowledge-base', account);
+  sb = NovusCore.getSupabase();
+  await loadDocs();
+})();
+
+/* ── Add document ───────────────────────────────────────────── */
+async function addDoc() {
+  const title   = document.getElementById('fTitle').value.trim();
+  const type    = document.getElementById('fType').value;
+  const content = document.getElementById('fContent').value.trim();
+
+  if (!title)   { NovusCore.toast('Title is required.', 'error');   return; }
+  if (!content) { NovusCore.toast('Content is required.', 'error'); return; }
+
+  const { error } = await sb.from('knowledge_base').insert({ title, doc_type: type, content });
+  if (error) { NovusCore.toast('Save failed: ' + error.message, 'error'); return; }
+
+  NovusCore.toast(`✅ "${title}" saved.`, 'success');
+  document.getElementById('fTitle').value   = '';
+  document.getElementById('fContent').value = '';
+  await loadDocs();
+}
+
+/* ── Load & filter ──────────────────────────────────────────── */
+async function loadDocs() {
+  const { data } = await sb.from('knowledge_base').select('*').order('updated_at', { ascending: false });
+  allDocs = data || [];
+  applyFilter();
+}
+
+function applyFilter() {
+  let rows = [...allDocs];
+  const q  = document.getElementById('filterSearch').value.trim().toLowerCase();
+  const t  = document.getElementById('filterType').value;
+  if (q) rows = rows.filter(r =>
+    r.title.toLowerCase().includes(q) || r.content.toLowerCase().includes(q));
+  if (t !== 'all') rows = rows.filter(r => r.doc_type === t);
+  document.getElementById('docCount').textContent = `${rows.length} of ${allDocs.length} documents`;
+  renderDocs(rows);
+}
+
+/* ── Render document cards ──────────────────────────────────── */
+function renderDocs(docs) {
+  const list = document.getElementById('docList');
+  if (!docs.length) {
+    list.innerHTML = `<div class="empty"><div class="icon">📄</div>
+      <p>No documents found. Add your first SOP or OPL above.</p></div>`;
+    return;
+  }
+  list.innerHTML = docs.map(doc => {
+    const isSOP   = doc.doc_type === 'SOP';
+    const icon    = isSOP ? '📋' : '💡';
+    const badgeCls = isSOP ? 'badge-blue' : 'badge-green';
+    return `
+    <div class="doc-card" id="doc-${doc.id}">
+      <div class="doc-card-header" onclick="toggleDoc(${doc.id})">
+        <span>${icon}</span>
+        <span class="badge ${badgeCls}">${doc.doc_type}</span>
+        <span class="fw-600" style="flex:1;">${doc.title}</span>
+        <span style="font-size:11px;color:var(--text-3);">Updated ${NovusCore.fmtDate(doc.updated_at)}</span>
+        <span style="color:var(--text-3);margin-left:8px;" id="caret-${doc.id}">▶</span>
+      </div>
+      <div class="doc-card-body" id="body-${doc.id}">
+        <div class="doc-content">${escHtml(doc.content)}</div>
+        <div class="doc-actions">
+          <button class="btn btn-ghost btn-sm" onclick="startEdit(${doc.id})">✏️ Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteDoc(${doc.id})">🗑️ Delete</button>
+        </div>
+        <!-- Edit form (hidden by default, shown via startEdit) -->
+        <div class="edit-form" id="edit-${doc.id}" style="display:none;">
+          <div class="form-grid" style="margin-bottom:10px;">
+            <div class="form-group" style="grid-column:span 2;">
+              <label>Title</label>
+              <input id="et-${doc.id}" type="text" value="${escAttr(doc.title)}" />
+            </div>
+            <div class="form-group">
+              <label>Type</label>
+              <select id="ety-${doc.id}">
+                <option value="SOP" ${doc.doc_type==='SOP'?'selected':''}>SOP</option>
+                <option value="OPL" ${doc.doc_type==='OPL'?'selected':''}>OPL</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group" style="margin-bottom:10px;">
+            <label>Content</label>
+            <textarea id="ec-${doc.id}" style="min-height:120px;">${escHtml(doc.content)}</textarea>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-primary btn-sm" onclick="saveEdit(${doc.id})">💾 Save Changes</button>
+            <button class="btn btn-ghost btn-sm" onclick="cancelEdit(${doc.id})">✖ Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* ── Card toggle ────────────────────────────────────────────── */
+function toggleDoc(id) {
+  const body  = document.getElementById('body-' + id);
+  const caret = document.getElementById('caret-' + id);
+  const open  = body.classList.toggle('open');
+  caret.textContent = open ? '▼' : '▶';
+}
+
+/* ── Edit flow ──────────────────────────────────────────────── */
+function startEdit(id) {
+  document.getElementById('edit-' + id).style.display = 'block';
+}
+function cancelEdit(id) {
+  document.getElementById('edit-' + id).style.display = 'none';
+}
+async function saveEdit(id) {
+  const title   = document.getElementById('et-' + id).value.trim();
+  const type    = document.getElementById('ety-' + id).value;
+  const content = document.getElementById('ec-' + id).value.trim();
+  if (!title || !content) { NovusCore.toast('Title and content are required.', 'error'); return; }
+
+  const { error } = await sb.from('knowledge_base').update({
+    title, doc_type: type, content,
+    updated_at: new Date().toISOString(),
+  }).eq('id', id);
+
+  if (error) { NovusCore.toast('Update failed: ' + error.message, 'error'); return; }
+  NovusCore.toast('✅ Document updated.', 'success');
+  await loadDocs();
+}
+
+/* ── Delete ─────────────────────────────────────────────────── */
+async function deleteDoc(id) {
+  const doc = allDocs.find(d => d.id === id);
+  if (!confirm(`Delete "${doc?.title}"? This is permanent.`)) return;
+  await sb.from('knowledge_base').delete().eq('id', id);
+  NovusCore.toast('Document deleted.', 'info');
+  await loadDocs();
+}
+
+/* ── CSV export ─────────────────────────────────────────────── */
+function exportCSV() {
+  if (!allDocs.length) { NovusCore.toast('No data to export.', 'info'); return; }
+  const headers = ['id','doc_type','title','content','created_at','updated_at'];
+  const rows = allDocs.map(r => headers.map(h => JSON.stringify(r[h] ?? '')).join(','));
+  const csv  = [headers.join(','), ...rows].join('\n');
+  const a    = document.createElement('a');
+  a.href     = 'data:text/csv,' + encodeURIComponent(csv);
+  a.download = `knowledge_base_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
+
+/* ── Helpers ────────────────────────────────────────────────── */
+function escHtml(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function escAttr(str) {
+  return String(str).replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>
