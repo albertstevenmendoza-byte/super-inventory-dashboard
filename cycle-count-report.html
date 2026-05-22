@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Count Report — Inv. Control Hub</title>
+  <link rel="stylesheet" href="novus-styles.css" />
+</head>
+<body>
+
+<nav id="sidebar"></nav>
+
+<main id="main">
+  <div class="page-header">
+    <h1>📈 Cycle Count Report</h1>
+    <p>Period-level summary of all counts, IRA, and adjustment totals. Built for management reporting.</p>
+  </div>
+
+  <!-- Period selector -->
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
+    <span style="font-size:13px;color:var(--text-2);">Report period:</span>
+    <select id="periodSelect" onchange="loadReport()"
+      style="background:var(--bg-700);border:1px solid var(--border);border-radius:6px;color:var(--text-1);font-size:13px;padding:7px 10px;font-family:var(--font);outline:none;">
+    </select>
+    <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇️ Export Report CSV</button>
+  </div>
+
+  <!-- KPI row -->
+  <div class="kpi-grid">
+    <div class="kpi-card blue">
+      <div class="kpi-label">Total Counts</div>
+      <div class="kpi-value" id="kpiCounts">—</div>
+      <div class="kpi-sub">entries logged</div>
+    </div>
+    <div class="kpi-card green">
+      <div class="kpi-label">📐 Period IRA</div>
+      <div class="kpi-value" id="kpiIRA">—</div>
+      <div class="kpi-sub" id="kpiIRASub">—</div>
+    </div>
+    <div class="kpi-card amber">
+      <div class="kpi-label">Net Variance</div>
+      <div class="kpi-value" id="kpiVariance">—</div>
+      <div class="kpi-sub">units (signed)</div>
+    </div>
+    <div class="kpi-card blue">
+      <div class="kpi-label">Zones Covered</div>
+      <div class="kpi-value" id="kpiZones">—</div>
+      <div class="kpi-sub">of 20 locations</div>
+    </div>
+    <div class="kpi-card amber">
+      <div class="kpi-label">Adjustments</div>
+      <div class="kpi-value" id="kpiAdj">—</div>
+      <div class="kpi-sub" id="kpiAdjNet">net units</div>
+    </div>
+  </div>
+
+  <!-- Zone summary -->
+  <div class="card">
+    <div class="card-title">📍 Counts by Zone</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Zone</th><th>Area</th><th>Count Entries</th><th>Avg Var %</th><th>IRA</th></tr>
+        </thead>
+        <tbody id="zoneBody">
+          <tr><td colspan="5" style="padding:16px;text-align:center;color:var(--text-2);">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Full count log for the period -->
+  <div class="card">
+    <div class="card-title">📋 All Count Entries — Selected Period</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp</th><th>Zone</th><th>Material</th><th>Batch</th>
+            <th>SAP Qty</th><th>Floor Qty</th><th>Variance</th><th>Var %</th>
+          </tr>
+        </thead>
+        <tbody id="countsBody">
+          <tr><td colspan="8" style="padding:16px;text-align:center;color:var(--text-2);">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Adjustment summary for the period -->
+  <div class="card">
+    <div class="card-title">📝 Adjustment Summary — Selected Period</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Date</th><th>Material</th><th>Batch</th><th>Adj. Qty</th><th>Category</th><th>Notes</th></tr>
+        </thead>
+        <tbody id="adjBody">
+          <tr><td colspan="6" style="padding:16px;text-align:center;color:var(--text-2);">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="novus-core.js"></script>
+<script>
+let sb, reportCounts = [], reportAdj = [];
+
+(async () => {
+  const account = await NovusCore.requireAuth();
+  if (!account) return;
+  NovusCore.renderNav('cycle-count-report', account);
+  sb = NovusCore.getSupabase();
+
+  const current = NovusCore.getFiscalPeriod();
+  const sel = document.getElementById('periodSelect');
+  NovusCore.FISCAL_CALENDAR.slice().reverse().forEach(p => {
+    const label = `FY${p.fy}-P${String(p.period).padStart(2,'0')}`;
+    const opt   = document.createElement('option');
+    opt.value   = label;
+    opt.textContent = `${label}  (${p.start} – ${p.end})`;
+    if (current && label === current.label) opt.selected = true;
+    sel.appendChild(opt);
+  });
+
+  await loadReport();
+})();
+
+function getZoneArea(zone) {
+  for (const [area, zones] of Object.entries(NovusCore.ZONES)) {
+    if (zones.includes(zone)) return area;
+  }
+  return 'Other';
+}
+
+async function loadReport() {
+  const period = document.getElementById('periodSelect').value;
+
+  const [ccRes, adjRes] = await Promise.all([
+    sb.from('cycle_counts').select('*').eq('fiscal_period', period).order('logged_at', { ascending: false }),
+    sb.from('adjustments').select('*').eq('fiscal_period', period).order('posted_date', { ascending: false }),
+  ]);
+
+  reportCounts = ccRes.data  || [];
+  reportAdj    = adjRes.data || [];
+
+  renderKPIs();
+  renderZoneTable();
+  renderCountsTable();
+  renderAdjTable();
+}
+
+function renderKPIs() {
+  const ira = NovusCore.calcIRA(reportCounts);
+  document.getElementById('kpiCounts').textContent = reportCounts.length;
+
+  document.getElementById('kpiIRA').textContent    = ira.ira !== null ? ira.ira + '%' : '—';
+  document.getElementById('kpiIRA').className       = `kpi-value text-${ira.ira >= 95 ? 'green' : ira.ira >= 85 ? 'amber' : 'red'}`;
+  document.getElementById('kpiIRASub').textContent  = ira.total ? `${ira.accurate} accurate / ${ira.inaccurate} inaccurate` : 'No counts';
+
+  const netVar = reportCounts.reduce((s, r) => s + parseFloat(r.variance||0), 0);
+  document.getElementById('kpiVariance').textContent = (netVar>=0?'+':'') + netVar.toFixed(0);
+
+  const uniqueZones = new Set(reportCounts.map(r => r.zone).filter(Boolean));
+  document.getElementById('kpiZones').textContent = uniqueZones.size;
+
+  const netAdj = reportAdj.reduce((s, r) => s + parseFloat(r.adjustment_qty||0), 0);
+  document.getElementById('kpiAdj').textContent   = reportAdj.length;
+  document.getElementById('kpiAdjNet').textContent = `${netAdj>=0?'+':''}${netAdj.toFixed(0)} units net`;
+}
+
+function renderZoneTable() {
+  const tbody = document.getElementById('zoneBody');
+  if (!reportCounts.length) {
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:16px;color:var(--text-2);">No counts for this period.</td></tr>`;
+    return;
+  }
+
+  // Group by zone
+  const byZone = {};
+  reportCounts.forEach(r => {
+    const z = r.zone || 'Unassigned';
+    if (!byZone[z]) byZone[z] = [];
+    byZone[z].push(r);
+  });
+
+  tbody.innerHTML = Object.entries(byZone)
+    .sort(([a],[b]) => a.localeCompare(b))
+    .map(([zone, rows]) => {
+      const zoneIra  = NovusCore.calcIRA(rows);
+      const avgVar   = rows.reduce((s, r) => s + parseFloat(r.variance_pct||0), 0) / rows.length;
+      const iraCls   = zoneIra.ira >= 95 ? 'green' : zoneIra.ira >= 85 ? 'amber' : 'red';
+      return `<tr>
+        <td class="fw-600">${zone}</td>
+        <td style="color:var(--text-2)">${getZoneArea(zone)}</td>
+        <td>${rows.length}</td>
+        <td>${avgVar.toFixed(2)}%</td>
+        <td><span class="badge badge-${iraCls}">${zoneIra.ira}%</span></td>
+      </tr>`;
+    }).join('');
+}
+
+function renderCountsTable() {
+  const tbody = document.getElementById('countsBody');
+  if (!reportCounts.length) {
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:16px;color:var(--text-2);">No counts for this period.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = reportCounts.map(r => {
+    const pct   = parseFloat(r.variance_pct||0);
+    const color = NovusCore.varColor(pct);
+    const sign  = parseFloat(r.variance||0) >= 0 ? '+' : '';
+    return `<tr class="row-${color}">
+      <td style="color:var(--text-2)">${NovusCore.fmtDate(r.logged_at)}</td>
+      <td><span class="badge badge-blue">${r.zone||'—'}</span></td>
+      <td class="fw-600">${r.material_number}</td>
+      <td>${r.batch_lot||'—'}</td>
+      <td>${parseFloat(r.sap_qty||0).toFixed(2)}</td>
+      <td>${parseFloat(r.floor_qty||0).toFixed(2)}</td>
+      <td class="text-${color}">${sign}${parseFloat(r.variance||0).toFixed(2)}</td>
+      <td><span class="badge badge-${color}">${pct.toFixed(2)}%</span></td>
+    </tr>`;
+  }).join('');
+}
+
+function renderAdjTable() {
+  const tbody = document.getElementById('adjBody');
+  if (!reportAdj.length) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:16px;color:var(--text-2);">No adjustments for this period.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = reportAdj.map(r => {
+    const qty  = parseFloat(r.adjustment_qty||0);
+    const cls  = qty < 0 ? 'text-red' : 'text-green';
+    const sign = qty > 0 ? '+' : '';
+    return `<tr>
+      <td>${r.posted_date}</td>
+      <td class="fw-600">${r.material_number}</td>
+      <td>${r.batch_lot||'—'}</td>
+      <td class="fw-600 ${cls}">${sign}${qty.toFixed(2)}</td>
+      <td><span class="badge badge-blue">${r.category}</span></td>
+      <td style="color:var(--text-2)">${r.notes||'—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function exportCSV() {
+  const period = document.getElementById('periodSelect').value;
+  if (!reportCounts.length && !reportAdj.length) { NovusCore.toast('No data for this period.', 'info'); return; }
+
+  // Counts sheet
+  const ch    = ['logged_at','fiscal_period','zone','material_number','batch_lot','sap_qty','floor_qty','variance','variance_pct'];
+  const cRows = reportCounts.map(r => ch.map(k => JSON.stringify(r[k]??'')).join(','));
+
+  // Adjustments sheet (appended with separator)
+  const ah    = ['posted_date','fiscal_period','material_number','batch_lot','adjustment_qty','category','notes'];
+  const aRows = reportAdj.map(r => ah.map(k => JSON.stringify(r[k]??'')).join(','));
+
+  const csv = [
+    `CYCLE COUNTS — ${period}`,
+    ch.join(','), ...cRows, '',
+    `ADJUSTMENTS — ${period}`,
+    ah.join(','), ...aRows,
+  ].join('\n');
+
+  const a = document.createElement('a');
+  a.href     = 'data:text/csv,' + encodeURIComponent(csv);
+  a.download = `report_${period}.csv`;
+  a.click();
+}
+</script>
+</body>
+</html>
