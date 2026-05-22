@@ -58,16 +58,15 @@
   </div>
 </main>
 
-<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="novus-core.js"></script>
 <script>
 let sb, allDocs = [];
 
 (async () => {
-  const account = await NovusCore.requireAuth();
-  if (!account) return;
-  NovusCore.renderNav('knowledge-base', account);
+  
+  
+  NovusCore.renderNav('knowledge-base');
   sb = NovusCore.getSupabase();
   await loadDocs();
 })();
