@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Import SAP Data — Inv. Control Hub</title>
+  <link rel="stylesheet" href="novus-styles.css" />
+  <style>
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 40px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      margin-bottom: 16px;
+    }
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: var(--accent);
+      background: rgba(59,130,246,0.05);
+    }
+    .drop-zone .drop-icon  { font-size: 36px; margin-bottom: 10px; }
+    .drop-zone .drop-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+    .drop-zone .drop-sub   { font-size: 12px; color: var(--text-2); }
+    .import-progress {
+      background: var(--bg-600);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      margin-bottom: 16px;
+      display: none;
+    }
+    .import-progress .prog-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+    .preview-info { font-size: 12px; color: var(--text-2); margin-bottom: 10px; }
+    .mapping-note {
+      background: rgba(59,130,246,0.08);
+      border: 1px solid rgba(59,130,246,0.2);
+      border-radius: 6px;
+      padding: 12px 16px;
+      font-size: 12px;
+      color: var(--text-2);
+      margin-bottom: 14px;
+      line-height: 1.6;
+    }
+    .result-box {
+      background: var(--bg-600);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      margin-top: 14px;
+      display: none;
+    }
+    .result-box.success { border-left: 3px solid var(--green); }
+    .result-box.error   { border-left: 3px solid var(--red);   }
+    .stat-row { display: flex; gap: 24px; margin-top: 10px; flex-wrap: wrap; }
+    .stat-item .s-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-2); }
+    .stat-item .s-val   { font-size: 20px; font-weight: 700; }
+  </style>
+</head>
+<body>
+
+<nav id="sidebar"></nav>
+
+<main id="main">
+  <div class="page-header">
+    <h1>📥 Import SAP Data</h1>
+    <p>Upload your daily SAP Excel exports. Data is parsed and pushed to Supabase automatically.</p>
+  </div>
+
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('adj', this)">📝 Adjustments (MB51)</button>
+    <button class="tab-btn"        onclick="switchTab('cc',  this)">🔄 Cycle Counts (LI21)</button>
+  </div>
+
+  <!-- ══ ADJUSTMENTS TAB ═══════════════════════════════════════ -->
+  <div id="tab-adj" class="tab-panel active">
+    <div class="card">
+      <div class="card-title">Upload MB51 Adjustment Report</div>
+
+      <div class="mapping-note">
+        <strong>Expected columns:</strong> Plant · Posting Date · Material · Material Description ·
+        Quantity · Movement Type · Movement Type Text · Amt.in Loc.Cur. · Batch · User Name · Material Document<br/>
+        <strong>Category</strong> is auto-detected from Movement Type Text. You can override it in the Adjustment Tracker after import.<br/>
+        <strong>Duplicate check:</strong> rows with the same Material Document number are skipped.
+      </div>
+
+      <div class="drop-zone" id="adjDrop"
+           onclick="document.getElementById('adjFile').click()"
+           ondragover="handleDragOver(event,'adjDrop')"
+           ondragleave="handleDragLeave(event,'adjDrop')"
+           ondrop="handleDrop(event,'adj')">
+        <div class="drop-icon">📊</div>
+        <div class="drop-title">Drop your MB51 .xlsx file here</div>
+        <div class="drop-sub">or click to browse</div>
+      </div>
+      <input type="file" id="adjFile" accept=".xlsx,.xls" style="display:none"
+             onchange="handleFileSelect(event,'adj')" />
+
+      <div class="import-progress" id="adjProgress">
+        <div class="prog-title" id="adjProgTitle">Parsing file…</div>
+        <div class="progress-wrap"><div class="progress-fill" id="adjProgFill" style="width:0%"></div></div>
+      </div>
+
+      <div id="adjPreview" style="display:none;">
+        <p class="preview-info" id="adjPreviewInfo"></p>
+        <div class="table-wrap" style="max-height:260px;overflow-y:auto;">
+          <table>
+            <thead><tr id="adjPreviewHead"></tr></thead>
+            <tbody id="adjPreviewBody"></tbody>
+          </table>
+        </div>
+        <div style="margin-top:14px;display:flex;gap:10px;align-items:center;">
+          <button class="btn btn-primary" onclick="importAdjustments()">💾 Import to Supabase</button>
+          <button class="btn btn-ghost"   onclick="resetTab('adj')">✖ Cancel</button>
+        </div>
+      </div>
+
+      <div class="result-box" id="adjResult">
+        <div class="prog-title" id="adjResultTitle"></div>
+        <div class="stat-row" id="adjResultStats"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ CYCLE COUNT TAB ═══════════════════════════════════════ -->
+  <div id="tab-cc" class="tab-panel">
+    <div class="card">
+      <div class="card-title">Upload LI21 Cycle Count Report</div>
+
+      <div class="mapping-note">
+        <strong>Expected columns:</strong> Warehouse Order · Physical Inventory Document · Product ·
+        Product Short Description · Storage Bin · Count Date · Book Quantity · Counted Quantity ·
+        Difference Quantity · Difference Qty to Target Qty in Percent. · Difference Value · Batch<br/>
+        <strong>Zone</strong> is auto-derived from the first 2 characters of Storage Bin (e.g. WD20B → WD).<br/>
+        <strong>Duplicate check:</strong> rows with the same Warehouse Order + Storage Bin are skipped.
+      </div>
+
+      <div class="drop-zone" id="ccDrop"
+           onclick="document.getElementById('ccFile').click()"
+           ondragover="handleDragOver(event,'ccDrop')"
+           ondragleave="handleDragLeave(event,'ccDrop')"
+           ondrop="handleDrop(event,'cc')">
+        <div class="drop-icon">🔄</div>
+        <div class="drop-title">Drop your LI21 .xlsx file here</div>
+        <div class="drop-sub">or click to browse</div>
+      </div>
+      <input type="file" id="ccFile" accept=".xlsx,.xls" style="display:none"
+             onchange="handleFileSelect(event,'cc')" />
+
+      <div class="import-progress" id="ccProgress">
+        <div class="prog-title" id="ccProgTitle">Parsing file…</div>
+        <div class="progress-wrap"><div class="progress-fill" id="ccProgFill" style="width:0%"></div></div>
+      </div>
+
+      <div id="ccPreview" style="display:none;">
+        <p class="preview-info" id="ccPreviewInfo"></p>
+        <div class="table-wrap" style="max-height:260px;overflow-y:auto;">
+          <table>
+            <thead><tr id="ccPreviewHead"></tr></thead>
+            <tbody id="ccPreviewBody"></tbody>
+          </table>
+        </div>
+        <div style="margin-top:14px;display:flex;gap:10px;align-items:center;">
+          <button class="btn btn-primary" onclick="importCycleCounts()">💾 Import to Supabase</button>
+          <button class="btn btn-ghost"   onclick="resetTab('cc')">✖ Cancel</button>
+        </div>
+      </div>
+
+      <div class="result-box" id="ccResult">
+        <div class="prog-title" id="ccResultTitle"></div>
+        <div class="stat-row" id="ccResultStats"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import history -->
+  <div class="card">
+    <div class="card-title">📋 Recent Imports</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Type</th><th>Fiscal Period</th><th>Records Imported</th><th>Date Range</th><th>Imported At</th></tr>
+        </thead>
+        <tbody id="importHistoryBody">
+          <tr><td colspan="5" style="padding:16px;text-align:center;color:var(--text-2);">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="novus-core.js"></script>
+<script>
+let sb;
+let parsedAdj = [], parsedCC = [];
+
+(async () => {
+  NovusCore.renderNav('import-data');
+  sb = NovusCore.getSupabase();
+  await loadImportHistory();
+})();
+
+/* ── Tab switcher ─────────────────────────────────────────── */
+function switchTab(id, btn) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + id).classList.add('active');
+  btn.classList.add('active');
+}
+
+/* ── Drag & drop handlers ─────────────────────────────────── */
+function handleDragOver(e, zoneId)  { e.preventDefault(); document.getElementById(zoneId).classList.add('dragover'); }
+function handleDragLeave(e, zoneId) { document.getElementById(zoneId).classList.remove('dragover'); }
+function handleDrop(e, type) {
+  e.preventDefault();
+  document.getElementById(type === 'adj' ? 'adjDrop' : 'ccDrop').classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (file) processFile(file, type);
+}
+function handleFileSelect(e, type) {
+  const file = e.target.files[0];
+  if (file) processFile(file, type);
+}
+
+/* ── Parse Excel file with SheetJS ───────────────────────── */
+function processFile(file, type) {
+  const progress = document.getElementById(type + 'Progress');
+  const progFill = document.getElementById(type + 'ProgFill');
+  const progTitle= document.getElementById(type + 'ProgTitle');
+  progress.style.display = 'block';
+  progTitle.textContent  = 'Reading file…';
+  progFill.style.width   = '20%';
+
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      progFill.style.width  = '50%';
+      progTitle.textContent = 'Parsing columns…';
+      const wb   = XLSX.read(e.target.result, { type: 'array', cellDates: true });
+      const ws   = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { raw: false, dateNF: 'yyyy-mm-dd' });
+
+      progFill.style.width  = '80%';
+      progTitle.textContent = 'Mapping fields…';
+
+      if (type === 'adj') {
+        parsedAdj = mapAdjustmentRows(rows);
+        showPreview('adj', parsedAdj, ['Date','Material','Description','Qty','Amt ($)','Mov.Type','Category','Batch','User']);
+      } else {
+        parsedCC = mapCycleCountRows(rows);
+        showPreview('cc', parsedCC, ['Count Date','Zone','Bin','Material','Description','SAP Qty','Floor Qty','Variance','Var %','Diff Value ($)']);
+      }
+
+      progFill.style.width  = '100%';
+      progTitle.textContent = 'Done — review below.';
+    } catch(err) {
+      progress.style.display = 'none';
+      NovusCore.toast('Parse error: ' + err.message, 'error');
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+/* ── Map adjustment rows from SAP MB51 format ────────────── */
+function mapAdjustmentRows(rows) {
+  return rows.map(r => {
+    const movText  = (r['Movement Type Text'] || '').toLowerCase();
+    const category = detectCategory(movText);
+    const dateRaw  = r['Posting Date'] || '';
+    const dateStr  = dateRaw.slice(0, 10); // YYYY-MM-DD
+    const fp       = NovusCore.getFiscalPeriod(new Date(dateStr + 'T12:00:00'));
+    return {
+      posted_date:          dateStr,
+      fiscal_period:        fp?.label || 'UNKNOWN',
+      material_number:      String(r['Material'] || '').trim(),
+      material_description: String(r['Material Description'] || '').trim(),
+      batch_lot:            String(r['Batch'] || '').trim(),
+      adjustment_qty:       parseFloat(r['Quantity']) || 0,
+      amount_lc:            parseFloat(r['Amt.in Loc.Cur.']) || 0,
+      movement_type:        String(r['Movement Type'] || '').trim(),
+      movement_type_text:   String(r['Movement Type Text'] || '').trim(),
+      sap_user:             String(r['User Name'] || '').trim(),
+      material_document:    String(r['Material Document'] || '').trim(),
+      category,
+      notes:                '',
+      source:               'import',
+    };
+  }).filter(r => r.material_number && r.posted_date);
+}
+
+/* ── Map cycle count rows from SAP LI21 format ───────────── */
+function mapCycleCountRows(rows) {
+  return rows.map(r => {
+    const bin      = String(r['Storage Bin'] || '').trim();
+    const zone     = bin.length >= 2 ? bin.slice(0, 2).toUpperCase() : bin.toUpperCase();
+    const dateRaw  = r['Count Date'] || '';
+    const dateStr  = dateRaw.slice(0, 10);
+    const fp       = NovusCore.getFiscalPeriod(new Date(dateStr + 'T12:00:00'));
+    const sapQty   = parseFloat(r['Book Quantity'])    || 0;
+    const floorQty = parseFloat(r['Counted Quantity']) || 0;
+    const variance = parseFloat(r['Difference Quantity']) || 0;
+    // SAP uses 999.99 when book qty is 0; cap at 100 for IRA math
+    let varPct = parseFloat(r['Difference Qty to Target Qty in Percent.']) || 0;
+    if (varPct >= 999) varPct = 100;
+
+    return {
+      count_date:           dateStr,
+      logged_at:            dateStr ? new Date(dateStr + 'T12:00:00').toISOString() : null,
+      fiscal_period:        fp?.label || 'UNKNOWN',
+      zone,
+      storage_bin:          bin,
+      material_number:      String(r['Product'] || '').trim(),
+      material_description: String(r['Product Short Description'] || '').trim(),
+      batch_lot:            String(r['Batch'] || '').trim(),
+      sap_qty:              sapQty,
+      floor_qty:            floorQty,
+      variance,
+      variance_pct:         varPct,
+      difference_value:     parseFloat(r['Difference Value']) || 0,
+      warehouse_order:      String(r['Warehouse Order'] || '').trim(),
+      pi_document:          String(r['Physical Inventory Document'] || '').trim(),
+      notes:                '',
+      source:               'import',
+    };
+  }).filter(r => r.material_number && r.count_date);
+}
+
+/* ── Category auto-detection from movement type text ─────── */
+function detectCategory(movText) {
+  if (movText.includes('invdiff') || movText.includes('inv diff')) return 'Inventory Difference';
+  if (movText.includes('sampl'))                                    return 'Sampling';
+  if (movText.includes('dispos') || movText.includes('scrap'))      return 'Disposals';
+  if (movText.includes('damage'))                                   return 'Damaged';
+  if (movText.includes('ship') || movText.includes('gi sd'))        return 'Shipping Adjustment';
+  return 'Inventory Difference'; // default for 711/712
+}
+
+/* ── Show preview table ───────────────────────────────────── */
+function showPreview(type, rows, headers) {
+  const previewDiv  = document.getElementById(type + 'Preview');
+  const previewInfo = document.getElementById(type + 'PreviewInfo');
+  const thead       = document.getElementById(type + 'PreviewHead');
+  const tbody       = document.getElementById(type + 'PreviewBody');
+  const progress    = document.getElementById(type + 'Progress');
+
+  previewInfo.textContent = `${rows.length.toLocaleString()} rows ready to import. Showing first 8.`;
+  thead.innerHTML = headers.map(h => `<th>${h}</th>`).join('');
+
+  const preview8 = rows.slice(0, 8);
+  if (type === 'adj') {
+    tbody.innerHTML = preview8.map(r => `<tr>
+      <td>${r.posted_date}</td>
+      <td>${r.material_number}</td>
+      <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.material_description}</td>
+      <td class="${r.adjustment_qty < 0 ? 'text-red' : 'text-green'}">${r.adjustment_qty >= 0 ? '+' : ''}${r.adjustment_qty}</td>
+      <td class="${r.amount_lc < 0 ? 'text-red' : 'text-green'}">${r.amount_lc >= 0 ? '+' : ''}$${Math.abs(r.amount_lc).toFixed(2)}</td>
+      <td>${r.movement_type}</td>
+      <td><span class="badge badge-blue">${r.category}</span></td>
+      <td>${r.batch_lot || '—'}</td>
+      <td>${r.sap_user}</td>
+    </tr>`).join('');
+  } else {
+    tbody.innerHTML = preview8.map(r => `<tr>
+      <td>${r.count_date}</td>
+      <td><span class="badge badge-blue">${r.zone}</span></td>
+      <td>${r.storage_bin}</td>
+      <td>${r.material_number}</td>
+      <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.material_description}</td>
+      <td>${r.sap_qty}</td>
+      <td>${r.floor_qty}</td>
+      <td class="${r.variance < 0 ? 'text-red' : r.variance > 0 ? 'text-amber' : ''}">${r.variance >= 0 ? '+' : ''}${r.variance}</td>
+      <td><span class="badge badge-${NovusCore.varColor(r.variance_pct)}">${r.variance_pct.toFixed(1)}%</span></td>
+      <td class="${r.difference_value < 0 ? 'text-red' : r.difference_value > 0 ? 'text-green' : ''}">$${Math.abs(r.difference_value).toFixed(2)}</td>
+    </tr>`).join('');
+  }
+
+  progress.style.display = 'none';
+  previewDiv.style.display = 'block';
+}
+
+/* ── Import adjustments to Supabase ──────────────────────── */
+async function importAdjustments() {
+  if (!parsedAdj.length) return;
+  showProgressBar('adj', 'Checking for duplicates…', 10);
+
+  // Fetch existing material_document numbers to dedup
+  const { data: existing } = await sb.from('adjustments')
+    .select('material_document').not('material_document', 'is', null);
+  const existingDocs = new Set((existing || []).map(r => r.material_document).filter(Boolean));
+
+  const toInsert = parsedAdj.filter(r => !existingDocs.has(r.material_document) || !r.material_document);
+  const skipped  = parsedAdj.length - toInsert.length;
+
+  if (!toInsert.length) {
+    showResult('adj', false, `All ${skipped} rows already exist in the database — nothing new to import.`, []);
+    return;
+  }
+
+  showProgressBar('adj', `Importing ${toInsert.length} rows…`, 40);
+  const chunks  = chunkArray(toInsert, 100);
+  let imported  = 0;
+  let errors    = 0;
+
+  for (let i = 0; i < chunks.length; i++) {
+    const { error } = await sb.from('adjustments').insert(chunks[i]);
+    if (error) { errors += chunks[i].length; }
+    else        { imported += chunks[i].length; }
+    const pct = 40 + Math.round(((i+1)/chunks.length) * 55);
+    showProgressBar('adj', `Uploaded ${imported} rows…`, pct);
+  }
+
+  showResult('adj', errors === 0,
+    errors === 0
+      ? `✅ Import complete`
+      : `⚠️ Import finished with ${errors} errors`,
+    [
+      { label: 'Imported',  val: imported },
+      { label: 'Skipped (duplicate)', val: skipped },
+      { label: 'Errors',    val: errors },
+    ]
+  );
+  NovusCore.toast(`Imported ${imported} adjustment rows.`, 'success');
+  await loadImportHistory();
+}
+
+/* ── Import cycle counts to Supabase ─────────────────────── */
+async function importCycleCounts() {
+  if (!parsedCC.length) return;
+  showProgressBar('cc', 'Checking for duplicates…', 10);
+
+  // Dedup by warehouse_order + storage_bin
+  const { data: existing } = await sb.from('cycle_counts')
+    .select('warehouse_order, storage_bin').eq('source', 'import');
+  const existingKeys = new Set(
+    (existing || []).map(r => `${r.warehouse_order}__${r.storage_bin}`)
+  );
+
+  const toInsert = parsedCC.filter(r =>
+    !existingKeys.has(`${r.warehouse_order}__${r.storage_bin}`)
+  );
+  const skipped = parsedCC.length - toInsert.length;
+
+  if (!toInsert.length) {
+    showResult('cc', false, `All ${skipped} rows already exist — nothing new to import.`, []);
+    return;
+  }
+
+  showProgressBar('cc', `Importing ${toInsert.length} rows…`, 40);
+  const chunks = chunkArray(toInsert, 100);
+  let imported = 0, errors = 0;
+
+  for (let i = 0; i < chunks.length; i++) {
+    const { error } = await sb.from('cycle_counts').insert(chunks[i]);
+    if (error) { errors += chunks[i].length; }
+    else        { imported += chunks[i].length; }
+    const pct = 40 + Math.round(((i+1)/chunks.length) * 55);
+    showProgressBar('cc', `Uploaded ${imported} rows…`, pct);
+  }
+
+  showResult('cc', errors === 0,
+    errors === 0 ? `✅ Import complete` : `⚠️ Finished with ${errors} errors`,
+    [
+      { label: 'Imported', val: imported },
+      { label: 'Skipped (duplicate)', val: skipped },
+      { label: 'Errors',  val: errors },
+    ]
+  );
+  NovusCore.toast(`Imported ${imported} cycle count rows.`, 'success');
+  await loadImportHistory();
+}
+
+/* ── Helpers ──────────────────────────────────────────────── */
+function chunkArray(arr, size) {
+  const chunks = [];
+  for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
+  return chunks;
+}
+
+function showProgressBar(type, text, pct) {
+  const progress = document.getElementById(type + 'Progress');
+  progress.style.display = 'block';
+  document.getElementById(type + 'ProgTitle').textContent = text;
+  document.getElementById(type + 'ProgFill').style.width  = pct + '%';
+  document.getElementById(type + 'Preview').style.display = 'none';
+}
+
+function showResult(type, success, title, stats) {
+  document.getElementById(type + 'Progress').style.display = 'none';
+  const box = document.getElementById(type + 'Result');
+  box.style.display = 'block';
+  box.className = `result-box ${success ? 'success' : 'error'}`;
+  document.getElementById(type + 'ResultTitle').textContent = title;
+  document.getElementById(type + 'ResultStats').innerHTML = stats.map(s => `
+    <div class="stat-item">
+      <div class="s-label">${s.label}</div>
+      <div class="s-val">${s.val}</div>
+    </div>`).join('');
+}
+
+function resetTab(type) {
+  document.getElementById(type + 'Preview').style.display  = 'none';
+  document.getElementById(type + 'Progress').style.display = 'none';
+  document.getElementById(type + 'Result').style.display   = 'none';
+  document.getElementById(type + 'File').value = '';
+  if (type === 'adj') parsedAdj = [];
+  else                parsedCC  = [];
+}
+
+/* ── Import history ───────────────────────────────────────── */
+async function loadImportHistory() {
+  const tbody = document.getElementById('importHistoryBody');
+
+  const [adjRes, ccRes] = await Promise.all([
+    sb.from('adjustments').select('fiscal_period, posted_date, created_at')
+      .eq('source','import').order('created_at', {ascending:false}).limit(200),
+    sb.from('cycle_counts').select('fiscal_period, count_date, logged_at')
+      .eq('source','import').order('logged_at', {ascending:false}).limit(200),
+  ]);
+
+  const rows = [];
+
+  if (adjRes.data?.length) {
+    const byPeriod = {};
+    adjRes.data.forEach(r => {
+      const key = r.fiscal_period;
+      if (!byPeriod[key]) byPeriod[key] = { count:0, dates:[], imported: r.created_at };
+      byPeriod[key].count++;
+      byPeriod[key].dates.push(r.posted_date);
+    });
+    Object.entries(byPeriod).forEach(([period, d]) => {
+      const sorted = d.dates.filter(Boolean).sort();
+      rows.push({ type:'📝 Adjustments', period, count:d.count,
+        range: sorted.length ? `${sorted[0]} → ${sorted[sorted.length-1]}` : '—',
+        at: NovusCore.fmtDate(d.imported) });
+    });
+  }
+
+  if (ccRes.data?.length) {
+    const byPeriod = {};
+    ccRes.data.forEach(r => {
+      const key = r.fiscal_period;
+      if (!byPeriod[key]) byPeriod[key] = { count:0, dates:[], imported: r.logged_at };
+      byPeriod[key].count++;
+      byPeriod[key].dates.push(r.count_date);
+    });
+    Object.entries(byPeriod).forEach(([period, d]) => {
+      const sorted = d.dates.filter(Boolean).sort();
+      rows.push({ type:'🔄 Cycle Counts', period, count:d.count,
+        range: sorted.length ? `${sorted[0]} → ${sorted[sorted.length-1]}` : '—',
+        at: NovusCore.fmtDate(d.imported) });
+    });
+  }
+
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="5" style="padding:16px;text-align:center;color:var(--text-2);">No imports yet.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = rows.sort((a,b) => b.at.localeCompare(a.at)).map(r => `<tr>
+    <td>${r.type}</td>
+    <td><span class="badge badge-blue">${r.period}</span></td>
+    <td>${r.count.toLocaleString()}</td>
+    <td style="color:var(--text-2);font-size:12px;">${r.range}</td>
+    <td style="color:var(--text-2);font-size:12px;">${r.at}</td>
+  </tr>`).join('');
+}
+</script>
+</body>
+</html>
