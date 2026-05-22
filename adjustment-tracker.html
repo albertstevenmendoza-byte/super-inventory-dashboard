@@ -6,24 +6,25 @@
   <title>Adjustment Tracker — Inv. Control Hub</title>
   <link rel="stylesheet" href="novus-styles.css" />
   <style>
-    .cat-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 12px;
-      margin-bottom: 20px;
-    }
-    .cat-card {
-      background: var(--bg-600);
-      border: 1px solid var(--border);
+    .cat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:12px; margin-bottom:4px; }
+    .cat-card  { background:var(--bg-600); border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; }
+    .cat-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.07em; color:var(--text-2); margin-bottom:6px; }
+    .cat-qty   { font-size:22px; font-weight:700; }
+    .cat-count { font-size:11px; color:var(--text-2); margin-top:3px; }
+    .cat-amt   { font-size:12px; color:var(--text-2); margin-top:2px; }
+    .cat-qty.neg { color:var(--red); } .cat-qty.pos { color:var(--green); } .cat-qty.zer { color:var(--text-2); }
+    .top-adj-card {
+      background: rgba(239,68,68,0.06);
+      border: 1px solid rgba(239,68,68,0.2);
       border-radius: var(--radius);
-      padding: 14px 16px;
+      padding: 16px 20px;
+      margin-bottom: 18px;
     }
-    .cat-card .cat-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-2); margin-bottom: 6px; }
-    .cat-card .cat-qty   { font-size: 22px; font-weight: 700; }
-    .cat-card .cat-count { font-size: 11px; color: var(--text-2); margin-top: 3px; }
-    .cat-qty.neg { color: var(--red);   }
-    .cat-qty.pos { color: var(--green); }
-    .cat-qty.zer { color: var(--text-2);}
+    .notes-cell { max-width:180px; }
+    .notes-view { cursor:pointer; color:var(--text-2); font-size:12px; display:flex; align-items:center; gap:4px; }
+    .notes-view:hover { color:var(--text-1); }
+    .notes-edit { display:none; }
+    .notes-input { background:var(--bg-600); border:1px solid var(--accent); border-radius:4px; color:var(--text-1); font-size:12px; padding:4px 6px; width:100%; font-family:var(--font); }
   </style>
 </head>
 <body>
@@ -36,22 +37,27 @@
     <p id="periodInfo">Loading fiscal period…</p>
   </div>
 
-  <!-- Period KPI row -->
+  <!-- KPI row -->
   <div class="kpi-grid" style="margin-bottom:20px;">
     <div class="kpi-card blue">
-      <div class="kpi-label">Period Adjustments</div>
+      <div class="kpi-label">Adjustments This Period</div>
       <div class="kpi-value" id="kpiTotal">—</div>
-      <div class="kpi-sub">total entries this period</div>
+      <div class="kpi-sub">total entries</div>
     </div>
     <div class="kpi-card amber">
       <div class="kpi-label">Net Qty Adjusted</div>
       <div class="kpi-value" id="kpiNet">—</div>
-      <div class="kpi-sub">units (signed total)</div>
+      <div class="kpi-sub">units (signed)</div>
     </div>
     <div class="kpi-card red">
-      <div class="kpi-label">Largest Removal</div>
-      <div class="kpi-value" id="kpiLargest">—</div>
-      <div class="kpi-sub" id="kpiLargestCat">—</div>
+      <div class="kpi-label">Net $ Impact</div>
+      <div class="kpi-value" id="kpiNetAmt">—</div>
+      <div class="kpi-sub">local currency</div>
+    </div>
+    <div class="kpi-card red">
+      <div class="kpi-label">Over $1,000</div>
+      <div class="kpi-value" id="kpiOver1k">—</div>
+      <div class="kpi-sub">adjustments requiring review</div>
     </div>
     <div class="kpi-card green">
       <div class="kpi-label">Period</div>
@@ -60,18 +66,28 @@
     </div>
   </div>
 
-  <!-- Category breakdown -->
-  <div class="card">
-    <div class="card-title">📊 Current Period — By Category</div>
-    <div class="cat-grid" id="catGrid">
-      <div style="color:var(--text-2);font-size:13px;">Loading…</div>
+  <!-- Top adjustments >$1,000 -->
+  <div class="top-adj-card" id="topAdjSection" style="display:none;">
+    <div class="card-title" style="margin-bottom:12px;">🚨 Top Adjustments Over $1,000 — Current Period</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Date</th><th>Material</th><th>Description</th><th>Qty</th><th>$ Amount</th><th>Category</th><th>Batch</th><th>Notes</th></tr>
+        </thead>
+        <tbody id="topAdjBody"></tbody>
+      </table>
     </div>
   </div>
 
-  <!-- Entry form -->
+  <!-- Category breakdown -->
   <div class="card">
-    <div class="card-title">➕ Log an Adjustment</div>
+    <div class="card-title">📊 Current Period — By Category</div>
+    <div class="cat-grid" id="catGrid"><div style="color:var(--text-2);font-size:13px;">Loading…</div></div>
+  </div>
 
+  <!-- Manual entry form -->
+  <div class="card">
+    <div class="card-title">➕ Log a Manual Adjustment</div>
     <div class="form-grid">
       <div class="form-group">
         <label>Date *</label>
@@ -79,52 +95,70 @@
       </div>
       <div class="form-group">
         <label>Material Number *</label>
-        <input id="fMaterial" type="text" placeholder="e.g. MAT-10045" />
+        <input id="fMaterial" type="text" placeholder="e.g. 1001886" />
+      </div>
+      <div class="form-group">
+        <label>Material Description</label>
+        <input id="fDesc" type="text" placeholder="e.g. Rojos 5 Lyr Dip 6/16oz" />
       </div>
       <div class="form-group">
         <label>Batch / Lot</label>
-        <input id="fBatch" type="text" placeholder="e.g. 250610-A" />
+        <input id="fBatch" type="text" placeholder="e.g. 0000059092" />
       </div>
       <div class="form-group">
-        <label>Adjustment Qty * <span style="font-size:10px;color:var(--text-2);">(+ added · − removed)</span></label>
-        <input id="fQty" type="number" step="0.01" placeholder="e.g. -48 or +12" />
+        <label>Qty * <span style="font-size:10px;color:var(--text-2);">(+ added · − removed)</span></label>
+        <input id="fQty" type="number" step="0.01" placeholder="e.g. -9 or +24" />
+      </div>
+      <div class="form-group">
+        <label>$ Amount <span style="font-size:10px;color:var(--text-2);">(optional)</span></label>
+        <input id="fAmt" type="number" step="0.01" placeholder="e.g. -106.01" />
       </div>
       <div class="form-group">
         <label>Category *</label>
         <select id="fCategory"></select>
       </div>
     </div>
-
     <div class="form-group" style="margin-bottom:14px;">
       <label>Notes</label>
-      <input id="fNotes" type="text" placeholder="e.g. Damaged cases from receiving dock — disposition approved by QA" />
+      <input id="fNotes" type="text" placeholder="e.g. Approved by QA — damaged cases from receiving dock" />
     </div>
-
     <button class="btn btn-primary" onclick="submitAdj()">💾 Save Adjustment</button>
   </div>
 
-  <!-- Log table -->
+  <!-- Full log table -->
   <div class="card">
     <div class="card-title flex items-center justify-between">
       <span>📋 Adjustment Log</span>
       <div class="flex gap-8 items-center">
-        <select id="filterPeriod" onchange="loadAdjustments()" style="background:var(--bg-600);border:1px solid var(--border);border-radius:6px;color:var(--text-1);font-size:12px;padding:5px 8px;font-family:var(--font);">
-          <option value="current">Current Period</option>
+        <select id="filterPeriod" onchange="loadAdjustments()"
+          style="background:var(--bg-600);border:1px solid var(--border);border-radius:6px;color:var(--text-1);font-size:12px;padding:5px 8px;font-family:var(--font);">
         </select>
         <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇️ Export CSV</button>
       </div>
+    </div>
+
+    <div class="filter-bar">
+      <input id="filterMat" type="text" placeholder="🔎 Filter by material…" oninput="applyFilter()" />
+      <select id="filterCat" onchange="applyFilter()"
+        style="background:var(--bg-700);border:1px solid var(--border);border-radius:6px;color:var(--text-1);font-size:13px;padding:7px 10px;font-family:var(--font);">
+        <option value="all">All categories</option>
+      </select>
+      <label style="font-size:12px;color:var(--text-2);display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="filterOver1k" onchange="applyFilter()" />
+        Over $1,000 only
+      </label>
     </div>
 
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
-            <th>ID</th><th>Date</th><th>Period</th><th>Material</th><th>Batch</th>
-            <th>Adj. Qty</th><th>Category</th><th>Notes</th><th></th>
+            <th>ID</th><th>Date</th><th>Material</th><th>Description</th><th>Batch</th>
+            <th>Qty</th><th>$ Amount</th><th>Mov.Type</th><th>Category</th><th>Source</th><th>Notes</th><th></th>
           </tr>
         </thead>
         <tbody id="adjBody">
-          <tr><td colspan="9" style="padding:20px;text-align:center;color:var(--text-2);">Loading…</td></tr>
+          <tr><td colspan="12" style="padding:20px;text-align:center;color:var(--text-2);">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -137,34 +171,32 @@
 let sb, currentPeriod, allAdj = [];
 
 (async () => {
-  
-  
   NovusCore.renderNav('adjustment-tracker');
   sb = NovusCore.getSupabase();
 
   currentPeriod = NovusCore.getFiscalPeriod();
-  document.getElementById('periodInfo').textContent   = currentPeriod?.display || 'Outside known fiscal calendar';
-  document.getElementById('kpiPeriodLabel').textContent = currentPeriod?.label  || '—';
-  document.getElementById('kpiPeriodDates').textContent = currentPeriod
-    ? `${currentPeriod.start} → ${currentPeriod.end}` : '—';
-
-  // Default date input to today
+  document.getElementById('periodInfo').textContent     = currentPeriod?.display || 'Outside known fiscal calendar';
+  document.getElementById('kpiPeriodLabel').textContent = currentPeriod?.label   || '—';
+  document.getElementById('kpiPeriodDates').textContent = currentPeriod ? `${currentPeriod.start} → ${currentPeriod.end}` : '—';
   document.getElementById('fDate').value = NovusCore.todayStr();
 
-  // Build category dropdown
+  // Category dropdown
   const sel = document.getElementById('fCategory');
+  const fcat = document.getElementById('filterCat');
   NovusCore.ADJ_CATEGORIES.forEach(c => {
-    const opt = document.createElement('option');
-    opt.value = opt.textContent = c;
-    sel.appendChild(opt);
+    [sel, fcat].forEach(el => {
+      const opt = document.createElement('option');
+      opt.value = opt.textContent = c;
+      el.appendChild(opt);
+    });
   });
 
-  // Build period filter dropdown from fiscal calendar
+  // Period filter
   const fp = document.getElementById('filterPeriod');
   NovusCore.FISCAL_CALENDAR.slice().reverse().forEach(p => {
     const label = `FY${p.fy}-P${String(p.period).padStart(2,'0')}`;
     const opt   = document.createElement('option');
-    opt.value   = label;
+    opt.value = label;
     opt.textContent = `${label}  (${p.start} → ${p.end})`;
     if (currentPeriod && label === currentPeriod.label) opt.selected = true;
     fp.appendChild(opt);
@@ -174,131 +206,194 @@ let sb, currentPeriod, allAdj = [];
 })();
 
 async function loadAdjustments() {
-  const selected = document.getElementById('filterPeriod').value;
-  const period   = selected === 'current' ? currentPeriod?.label : selected;
-
-  let query = sb.from('adjustments').select('*').order('posted_date', { ascending: false });
-  if (period) query = query.eq('fiscal_period', period);
-
-  const { data } = await query;
+  const period = document.getElementById('filterPeriod').value;
+  const { data } = await sb.from('adjustments').select('*')
+    .eq('fiscal_period', period).order('posted_date', { ascending: false });
   allAdj = data || [];
-
-  renderKPIs(allAdj, period);
+  renderKPIs(allAdj);
   renderCatBreakdown(allAdj);
-  renderTable(allAdj);
+  renderTopOver1k(allAdj);
+  applyFilter();
 }
 
-function renderKPIs(rows, periodLabel) {
-  document.getElementById('kpiTotal').textContent = rows.length;
-  if (!rows.length) {
-    document.getElementById('kpiNet').textContent     = '0';
-    document.getElementById('kpiLargest').textContent = '—';
-    document.getElementById('kpiLargestCat').textContent = '—';
-    return;
-  }
-  const net = rows.reduce((s, r) => s + parseFloat(r.adjustment_qty), 0);
-  document.getElementById('kpiNet').textContent = (net >= 0 ? '+' : '') + net.toFixed(0);
+function renderKPIs(rows) {
+  const netQty  = rows.reduce((s,r) => s + parseFloat(r.adjustment_qty||0), 0);
+  const netAmt  = rows.reduce((s,r) => s + parseFloat(r.amount_lc||0), 0);
+  const over1k  = rows.filter(r => Math.abs(parseFloat(r.amount_lc||0)) >= 1000).length;
+  document.getElementById('kpiTotal').textContent  = rows.length;
+  document.getElementById('kpiNet').textContent    = (netQty>=0?'+':'')+netQty.toFixed(0);
+  document.getElementById('kpiNetAmt').textContent = (netAmt>=0?'+$':'-$')+Math.abs(netAmt).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  document.getElementById('kpiOver1k').textContent = over1k;
+}
 
-  // Category with largest absolute total
-  const catTotals = {};
-  rows.forEach(r => { catTotals[r.category] = (catTotals[r.category]||0) + parseFloat(r.adjustment_qty); });
-  const [topCat, topVal] = Object.entries(catTotals).sort((a,b) => Math.abs(b[1])-Math.abs(a[1]))[0] || ['—',0];
-  document.getElementById('kpiLargest').textContent   = (topVal>=0?'+':'') + topVal.toFixed(0);
-  document.getElementById('kpiLargestCat').textContent = topCat;
+function renderTopOver1k(rows) {
+  const over1k = rows
+    .filter(r => Math.abs(parseFloat(r.amount_lc||0)) >= 1000)
+    .sort((a,b) => Math.abs(parseFloat(b.amount_lc||0)) - Math.abs(parseFloat(a.amount_lc||0)));
+
+  const section = document.getElementById('topAdjSection');
+  if (!over1k.length) { section.style.display = 'none'; return; }
+  section.style.display = 'block';
+
+  document.getElementById('topAdjBody').innerHTML = over1k.map(r => {
+    const amt = parseFloat(r.amount_lc||0);
+    const qty = parseFloat(r.adjustment_qty||0);
+    return `<tr>
+      <td>${r.posted_date}</td>
+      <td class="fw-600">${r.material_number}</td>
+      <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-2);">${r.material_description||'—'}</td>
+      <td class="${qty<0?'text-red':'text-green'}">${qty>=0?'+':''}${qty.toFixed(0)}</td>
+      <td class="fw-600 ${amt<0?'text-red':'text-green'}">${amt>=0?'+$':'-$'}${Math.abs(amt).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td><span class="badge badge-blue">${r.category}</span></td>
+      <td>${r.batch_lot||'—'}</td>
+      <td style="color:var(--text-2);font-size:12px;">${r.notes||'—'}</td>
+    </tr>`;
+  }).join('');
 }
 
 function renderCatBreakdown(rows) {
-  const grid = document.getElementById('catGrid');
-  const totals = {};
-  const counts = {};
-  NovusCore.ADJ_CATEGORIES.forEach(c => { totals[c] = 0; counts[c] = 0; });
-  rows.forEach(r => {
-    totals[r.category] = (totals[r.category]||0) + parseFloat(r.adjustment_qty);
-    counts[r.category] = (counts[r.category]||0) + 1;
+  const totals={}, counts={}, amts={};
+  NovusCore.ADJ_CATEGORIES.forEach(c=>{totals[c]=0;counts[c]=0;amts[c]=0;});
+  rows.forEach(r=>{
+    const c = r.category;
+    totals[c] = (totals[c]||0) + parseFloat(r.adjustment_qty||0);
+    amts[c]   = (amts[c]||0)   + parseFloat(r.amount_lc||0);
+    counts[c] = (counts[c]||0) + 1;
   });
-  grid.innerHTML = NovusCore.ADJ_CATEGORIES.map(cat => {
-    const qty   = totals[cat] || 0;
-    const cnt   = counts[cat] || 0;
-    const cls   = qty < 0 ? 'neg' : qty > 0 ? 'pos' : 'zer';
-    const sign  = qty > 0 ? '+' : '';
+  document.getElementById('catGrid').innerHTML = NovusCore.ADJ_CATEGORIES.map(cat => {
+    const qty  = totals[cat]||0, cnt=counts[cat]||0, amt=amts[cat]||0;
+    const cls  = qty<0?'neg':qty>0?'pos':'zer';
+    const sign = qty>0?'+':'';
+    const amtStr = (amt>=0?'+$':'-$') + Math.abs(amt).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
     return `<div class="cat-card">
       <div class="cat-label">${cat}</div>
       <div class="cat-qty ${cls}">${sign}${qty.toFixed(0)}</div>
+      <div class="cat-amt">${amtStr}</div>
       <div class="cat-count">${cnt} entr${cnt===1?'y':'ies'}</div>
     </div>`;
   }).join('');
 }
 
+function applyFilter() {
+  let rows = [...allAdj];
+  const mat    = document.getElementById('filterMat').value.trim().toUpperCase();
+  const cat    = document.getElementById('filterCat').value;
+  const over1k = document.getElementById('filterOver1k').checked;
+  if (mat)   rows = rows.filter(r => (r.material_number||'').includes(mat) || (r.material_description||'').toUpperCase().includes(mat));
+  if (cat !== 'all') rows = rows.filter(r => r.category === cat);
+  if (over1k) rows = rows.filter(r => Math.abs(parseFloat(r.amount_lc||0)) >= 1000);
+  renderTable(rows);
+}
+
 function renderTable(rows) {
   const tbody = document.getElementById('adjBody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--text-2);">No adjustments logged for this period.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;padding:24px;color:var(--text-2);">No adjustments found.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map(r => {
-    const qty  = parseFloat(r.adjustment_qty);
-    const cls  = qty < 0 ? 'text-red' : qty > 0 ? 'text-green' : '';
-    const sign = qty > 0 ? '+' : '';
-    return `<tr>
+    const qty = parseFloat(r.adjustment_qty||0);
+    const amt = parseFloat(r.amount_lc||0);
+    const amtStr = amt !== 0
+      ? `<span class="fw-600 ${amt<0?'text-red':'text-green'}">${amt>=0?'+$':'-$'}${Math.abs(amt).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>`
+      : '<span style="color:var(--text-2);">—</span>';
+    const isOver1k = Math.abs(amt) >= 1000;
+    return `<tr ${isOver1k ? 'class="row-red"' : ''}>
       <td style="color:var(--text-2)">${r.id}</td>
       <td>${r.posted_date}</td>
-      <td style="color:var(--text-2);font-size:12px;">${r.fiscal_period}</td>
       <td class="fw-600">${r.material_number}</td>
+      <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-2);">${r.material_description||'—'}</td>
       <td>${r.batch_lot||'—'}</td>
-      <td class="fw-600 ${cls}">${sign}${qty.toFixed(2)}</td>
+      <td class="${qty<0?'text-red':'text-green'} fw-600">${qty>=0?'+':''}${qty.toFixed(0)}</td>
+      <td>${amtStr}${isOver1k?' <span class="badge badge-red" style="font-size:10px;">$1K+</span>':''}</td>
+      <td style="color:var(--text-2);font-size:11px;">${r.movement_type||'—'}</td>
       <td><span class="badge badge-blue">${r.category}</span></td>
-      <td style="color:var(--text-2);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.notes||'—'}</td>
+      <td><span class="badge ${r.source==='import'?'badge-amber':'badge-green'}" style="font-size:10px;">${r.source||'manual'}</span></td>
+      <td class="notes-cell">
+        <div class="notes-view" id="nv-${r.id}" onclick="startNoteEdit(${r.id})">
+          ✏️ ${r.notes ? r.notes.slice(0,30)+(r.notes.length>30?'…':'') : '<span style="color:var(--text-3);">Add note</span>'}
+        </div>
+        <div class="notes-edit" id="ne-${r.id}">
+          <input class="notes-input" id="ni-${r.id}" type="text" value="${(r.notes||'').replace(/"/g,'&quot;')}"
+            onkeydown="if(event.key==='Enter')saveNote(${r.id});if(event.key==='Escape')cancelNote(${r.id})" />
+          <div style="display:flex;gap:6px;margin-top:4px;">
+            <button class="btn btn-success btn-sm" onclick="saveNote(${r.id})">Save</button>
+            <button class="btn btn-ghost btn-sm"   onclick="cancelNote(${r.id})">✖</button>
+          </div>
+        </div>
+      </td>
       <td><button class="btn btn-danger btn-sm" onclick="deleteAdj(${r.id})">🗑</button></td>
     </tr>`;
   }).join('');
 }
 
+/* ── Inline notes editing ─────────────────────────────────── */
+function startNoteEdit(id) {
+  document.getElementById('nv-'+id).style.display = 'none';
+  document.getElementById('ne-'+id).style.display = 'block';
+  document.getElementById('ni-'+id).focus();
+}
+function cancelNote(id) {
+  document.getElementById('nv-'+id).style.display = 'flex';
+  document.getElementById('ne-'+id).style.display = 'none';
+}
+async function saveNote(id) {
+  const note = document.getElementById('ni-'+id).value.trim();
+  await sb.from('adjustments').update({ notes: note }).eq('id', id);
+  const row = allAdj.find(r => r.id === id);
+  if (row) row.notes = note;
+  cancelNote(id);
+  document.getElementById('nv-'+id).innerHTML =
+    `✏️ ${note ? note.slice(0,30)+(note.length>30?'…':'') : '<span style="color:var(--text-3);">Add note</span>'}`;
+  NovusCore.toast('Note saved.', 'success');
+}
+
+/* ── Manual submit ────────────────────────────────────────── */
 async function submitAdj() {
   const date     = document.getElementById('fDate').value;
   const material = document.getElementById('fMaterial').value.trim().toUpperCase();
-  const batch    = document.getElementById('fBatch').value.trim().toUpperCase();
+  const desc     = document.getElementById('fDesc').value.trim();
+  const batch    = document.getElementById('fBatch').value.trim();
   const qty      = parseFloat(document.getElementById('fQty').value);
+  const amt      = parseFloat(document.getElementById('fAmt').value) || null;
   const category = document.getElementById('fCategory').value;
   const notes    = document.getElementById('fNotes').value.trim();
 
-  if (!date)     { NovusCore.toast('Date is required.', 'error'); return; }
-  if (!material) { NovusCore.toast('Material Number is required.', 'error'); return; }
-  if (isNaN(qty) || qty === 0) { NovusCore.toast('Adjustment Qty cannot be zero.', 'error'); return; }
+  if (!date)     { NovusCore.toast('Date is required.', 'error');   return; }
+  if (!material) { NovusCore.toast('Material is required.', 'error');return; }
+  if (isNaN(qty)||qty===0) { NovusCore.toast('Qty cannot be zero.', 'error'); return; }
 
-  // Determine fiscal period from the posted date
   const [y,m,d]   = date.split('-').map(Number);
-  const postPeriod = NovusCore.getFiscalPeriod(new Date(y, m-1, d));
+  const postPeriod = NovusCore.getFiscalPeriod(new Date(y,m-1,d));
 
   const { error } = await sb.from('adjustments').insert({
-    posted_date: date, fiscal_period: postPeriod?.label || 'UNKNOWN',
-    material_number: material, batch_lot: batch,
-    adjustment_qty: qty, category, notes,
+    posted_date:date, fiscal_period:postPeriod?.label||'UNKNOWN',
+    material_number:material, material_description:desc||null,
+    batch_lot:batch||null, adjustment_qty:qty, amount_lc:amt,
+    category, notes, source:'manual',
   });
 
-  if (error) { NovusCore.toast('Save failed: ' + error.message, 'error'); return; }
-
-  NovusCore.toast(`✅ Saved — ${material} · ${qty>=0?'+':''}${qty.toFixed(2)} · ${category}`, 'success');
-  document.getElementById('fMaterial').value = '';
-  document.getElementById('fBatch').value    = '';
-  document.getElementById('fQty').value      = '';
-  document.getElementById('fNotes').value    = '';
-  document.getElementById('fDate').value     = NovusCore.todayStr();
+  if (error) { NovusCore.toast('Save failed: '+error.message, 'error'); return; }
+  NovusCore.toast(`✅ Saved — ${material} · ${qty>=0?'+':''}${qty.toFixed(0)}`, 'success');
+  ['fMaterial','fDesc','fBatch','fQty','fAmt','fNotes'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('fDate').value = NovusCore.todayStr();
   await loadAdjustments();
 }
 
 async function deleteAdj(id) {
   if (!confirm(`Delete adjustment ID ${id}?`)) return;
-  await sb.from('adjustments').delete().eq('id', id);
-  NovusCore.toast('Deleted.', 'info');
+  await sb.from('adjustments').delete().eq('id',id);
+  NovusCore.toast('Deleted.','info');
   await loadAdjustments();
 }
 
 function exportCSV() {
-  if (!allAdj.length) { NovusCore.toast('No data to export.', 'info'); return; }
-  const h = ['id','posted_date','fiscal_period','material_number','batch_lot','adjustment_qty','category','notes'];
-  const rows = allAdj.map(r => h.map(k => JSON.stringify(r[k]??'')).join(','));
+  if (!allAdj.length) { NovusCore.toast('No data to export.','info'); return; }
+  const h = ['id','posted_date','fiscal_period','material_number','material_description','batch_lot',
+             'adjustment_qty','amount_lc','movement_type','movement_type_text','category','notes','source','sap_user'];
+  const rows = allAdj.map(r=>h.map(k=>JSON.stringify(r[k]??'')).join(','));
   const a = document.createElement('a');
-  a.href     = 'data:text/csv,' + encodeURIComponent([h.join(','),...rows].join('\n'));
+  a.href     = 'data:text/csv,'+encodeURIComponent([h.join(','),...rows].join('\n'));
   a.download = `adjustments_${new Date().toISOString().slice(0,10)}.csv`;
   a.click();
 }
