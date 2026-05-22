@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KPI Dashboard — Inv. Control Hub</title>
+  <link rel="stylesheet" href="novus-styles.css" />
+</head>
+<body>
+
+<nav id="sidebar"></nav>
+
+<main id="main">
+  <div class="page-header">
+    <h1>📊 Weekly KPI & Executive Summary</h1>
+    <p id="weekLabel">Loading…</p>
+  </div>
+
+  <!-- KPI Cards -->
+  <div class="kpi-grid">
+    <div class="kpi-card blue">
+      <div class="kpi-label">📐 IRA</div>
+      <div class="kpi-value" id="kpiIRA">—</div>
+      <div class="kpi-sub" id="kpiIRASub">Inventory Record Accuracy</div>
+    </div>
+    <div class="kpi-card blue">
+      <div class="kpi-label">🔢 Lines Counted</div>
+      <div class="kpi-value" id="kpiLines">—</div>
+      <div class="kpi-sub">Total entries logged</div>
+    </div>
+    <div class="kpi-card amber">
+      <div class="kpi-label">📉 Net Variance</div>
+      <div class="kpi-value" id="kpiVariance">—</div>
+      <div class="kpi-sub">units (signed total)</div>
+    </div>
+    <div class="kpi-card red">
+      <div class="kpi-label">🔥 Worst Var %</div>
+      <div class="kpi-value" id="kpiWorst">—</div>
+      <div class="kpi-sub" id="kpiWorstMat">—</div>
+    </div>
+    <div class="kpi-card red">
+      <div class="kpi-label">🎫 Open RCA Tickets</div>
+      <div class="kpi-value" id="kpiOpen">—</div>
+      <div class="kpi-sub" id="kpiClosed">— closed</div>
+    </div>
+  </div>
+
+  <!-- Charts -->
+  <div class="chart-grid">
+    <div class="chart-box">
+      <h3>IRA Gauge</h3>
+      <div class="chart-container">
+        <canvas id="iraChart"></canvas>
+        <div id="iraCenterLabel" style="
+          position:absolute; top:50%; left:50%;
+          transform:translate(-50%,-50%);
+          text-align:center; pointer-events:none;">
+          <div style="font-size:24px;font-weight:700;" id="iraCenterVal">—</div>
+          <div style="font-size:11px;color:var(--text-2);">IRA</div>
+        </div>
+      </div>
+    </div>
+    <div class="chart-box">
+      <h3>Accurate vs. Inaccurate Counts</h3>
+      <div class="chart-container">
+        <canvas id="accuracyChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Weekly Checklist -->
+  <div class="card">
+    <div class="card-title">
+      ✅ Weekly Supervisor Checklist
+      <span id="checklistProgress" style="font-size:12px;font-weight:400;color:var(--text-2);"></span>
+    </div>
+    <div class="progress-wrap"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+    <div class="checklist" id="checklist">
+      <div class="text-muted" style="font-size:13px;">Loading…</div>
+    </div>
+  </div>
+
+  <!-- Recent counts snapshot -->
+  <div class="card">
+    <div class="card-title">📋 Recent Cycle Count Entries (last 10)</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp</th><th>Material</th><th>Batch</th>
+            <th>SAP Qty</th><th>Floor Qty</th><th>Variance</th><th>Var %</th>
+          </tr>
+        </thead>
+        <tbody id="recentBody">
+          <tr><td colspan="7" class="text-muted" style="padding:20px;text-align:center;">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="novus-core.js"></script>
+<script>
+(async () => {
+  /* ── Auth guard ────────────────────────────────────────────── */
+  const account = await NovusCore.requireAuth();
+  if (!account) return;
+  NovusCore.renderNav('hub', account);
+
+  const sb          = NovusCore.getSupabase();
+  const weekLabel   = NovusCore.isoWeek();
+  document.getElementById('weekLabel').textContent =
+    `Week ${weekLabel} · ${new Date().toLocaleDateString('en-US', { weekday:'long', year:'numeric', month:'long', day:'numeric' })}`;
+
+  /* ── Fetch data ─────────────────────────────────────────────── */
+  const [ccRes, rcRes] = await Promise.all([
+    sb.from('cycle_counts').select('*').order('logged_at', { ascending: false }).limit(500),
+    sb.from('root_cause_log').select('id, status'),
+  ]);
+
+  const counts = ccRes.data || [];
+  const rca    = rcRes.data || [];
+
+  /* ── KPI cards ──────────────────────────────────────────────── */
+  const ira       = NovusCore.calcIRA(counts);
+  const openCount = rca.filter(r => r.status === 'Open').length;
+  const closedCount = rca.filter(r => r.status === 'Closed').length;
+
+  document.getElementById('kpiIRA').textContent    = ira.ira !== null ? ira.ira + '%' : 'No data';
+  document.getElementById('kpiIRASub').textContent =
+    ira.total ? `${ira.accurate} accurate / ${ira.inaccurate} inaccurate` : 'No counts logged yet';
+
+  document.getElementById('kpiLines').textContent   = ira.total;
+  document.getElementById('kpiOpen').textContent    = openCount;
+  document.getElementById('kpiClosed').textContent  = `${closedCount} closed`;
+
+  if (counts.length) {
+    const netVar = counts.reduce((s, r) => s + parseFloat(r.variance), 0);
+    const worst  = counts.reduce((a, b) => parseFloat(a.variance_pct) >= parseFloat(b.variance_pct) ? a : b);
+    document.getElementById('kpiVariance').textContent = (netVar >= 0 ? '+' : '') + netVar.toFixed(0);
+    document.getElementById('kpiWorst').textContent    = parseFloat(worst.variance_pct).toFixed(1) + '%';
+    document.getElementById('kpiWorstMat').textContent = worst.material_number;
+  }
+
+  /* ── IRA Doughnut chart ─────────────────────────────────────── */
+  const iraCtx = document.getElementById('iraChart').getContext('2d');
+  const iraVal = ira.ira !== null ? parseFloat(ira.ira) : 0;
+  document.getElementById('iraCenterVal').textContent = ira.ira !== null ? ira.ira + '%' : '—';
+
+  new Chart(iraCtx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Accurate', 'Inaccurate', 'No data'],
+      datasets: [{
+        data: ira.total
+          ? [ira.accurate, ira.inaccurate]
+          : [1, 0],
+        backgroundColor: ira.total
+          ? ['#22c55e', '#ef4444']
+          : ['#1e2d40'],
+        borderWidth: 0,
+      }]
+    },
+    options: {
+      cutout: '72%',
+      plugins: { legend: { display: false }, tooltip: { enabled: !!ira.total } },
+      animation: { duration: 600 },
+    }
+  });
+
+  /* ── Accuracy stacked bar ───────────────────────────────────── */
+  const accCtx = document.getElementById('accuracyChart').getContext('2d');
+  new Chart(accCtx, {
+    type: 'bar',
+    data: {
+      labels: ['This Period'],
+      datasets: [
+        { label: '✅ Accurate',   data: [ira.accurate],   backgroundColor: '#22c55e' },
+        { label: '❌ Inaccurate', data: [ira.inaccurate], backgroundColor: '#ef4444' },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { stacked: true, grid: { color: '#1e2d40' }, ticks: { color: '#94a3b8' } },
+        y: { stacked: true, grid: { color: '#1e2d40' }, ticks: { color: '#94a3b8' } },
+      },
+      plugins: {
+        legend: { labels: { color: '#94a3b8', boxWidth: 12 } }
+      }
+    }
+  });
+
+  /* ── Checklist ──────────────────────────────────────────────── */
+  // Fetch existing tasks for this week
+  let { data: tasks } = await sb.from('weekly_checklist')
+    .select('*').eq('week_label', weekLabel).order('id');
+
+  // Seed any missing default tasks
+  const existingNames = (tasks || []).map(t => t.task_name);
+  const missing = NovusCore.DEFAULT_TASKS.filter(t => !existingNames.includes(t));
+  if (missing.length) {
+    await sb.from('weekly_checklist').insert(
+      missing.map(t => ({ task_name: t, week_label: weekLabel }))
+    );
+    const { data: refreshed } = await sb.from('weekly_checklist')
+      .select('*').eq('week_label', weekLabel).order('id');
+    tasks = refreshed;
+  }
+
+  function renderChecklist(taskList) {
+    const done  = taskList.filter(t => t.completed).length;
+    const total = taskList.length;
+    const pct   = total ? Math.round((done / total) * 100) : 0;
+    document.getElementById('checklistProgress').textContent = `${done} / ${total} completed`;
+    document.getElementById('progressFill').style.width = pct + '%';
+
+    document.getElementById('checklist').innerHTML = taskList.map(t => `
+      <div class="check-item ${t.completed ? 'done' : ''}"
+           onclick="toggleTask(${t.id}, ${!t.completed})">
+        <div class="check-box">${t.completed ? '✓' : ''}</div>
+        <div class="check-label">${t.task_name}</div>
+      </div>`).join('');
+  }
+  renderChecklist(tasks);
+
+  window.toggleTask = async (id, completed) => {
+    await sb.from('weekly_checklist').update({
+      completed:    completed ? 1 : 0,
+      completed_at: completed ? new Date().toISOString() : null,
+    }).eq('id', id);
+    // Refresh local state and re-render
+    const idx = tasks.findIndex(t => t.id === id);
+    if (idx !== -1) tasks[idx].completed = completed ? 1 : 0;
+    renderChecklist(tasks);
+  };
+
+  /* ── Recent counts table ────────────────────────────────────── */
+  const tbody = document.getElementById('recentBody');
+  if (!counts.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="empty" style="text-align:center;padding:24px;">No counts logged yet — head to Cycle Count.</td></tr>`;
+  } else {
+    tbody.innerHTML = counts.slice(0, 10).map(r => {
+      const pct   = parseFloat(r.variance_pct);
+      const color = NovusCore.varColor(pct);
+      const sign  = parseFloat(r.variance) >= 0 ? '+' : '';
+      return `<tr class="row-${color}">
+        <td>${NovusCore.fmtDate(r.logged_at)}</td>
+        <td class="fw-600">${r.material_number}</td>
+        <td>${r.batch_lot || '—'}</td>
+        <td>${parseFloat(r.sap_qty).toFixed(2)}</td>
+        <td>${parseFloat(r.floor_qty).toFixed(2)}</td>
+        <td>${sign}${parseFloat(r.variance).toFixed(2)}</td>
+        <td><span class="badge badge-${color}">${pct.toFixed(2)}%</span></td>
+      </tr>`;
+    }).join('');
+  }
+})();
+</script>
+</body>
+</html>
