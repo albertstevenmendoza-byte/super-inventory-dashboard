@@ -85,6 +85,7 @@ const NovusCore = (() => {
 
   /* ── Sidebar navigation ──────────────────────────────────── */
   const NAV_ITEMS = [
+    { id:'import-data', href:'import-data.html', icon:'📥', label:'Import SAP Data' },
     { id:'hub',                  href:'hub.html',                  icon:'📊', label:'KPI Dashboard'     },
     { id:'cycle-count',          href:'cycle-count.html',          icon:'🔄', label:'Cycle Count'        },
     { id:'cycle-count-schedule', href:'cycle-count-schedule.html', icon:'📅', label:'Count Schedule'     },
