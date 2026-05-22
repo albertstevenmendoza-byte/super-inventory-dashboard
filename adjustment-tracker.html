@@ -131,16 +131,15 @@
   </div>
 </main>
 
-<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="novus-core.js"></script>
 <script>
 let sb, currentPeriod, allAdj = [];
 
 (async () => {
-  const account = await NovusCore.requireAuth();
-  if (!account) return;
-  NovusCore.renderNav('adjustment-tracker', account);
+  
+  
+  NovusCore.renderNav('adjustment-tracker');
   sb = NovusCore.getSupabase();
 
   currentPeriod = NovusCore.getFiscalPeriod();
